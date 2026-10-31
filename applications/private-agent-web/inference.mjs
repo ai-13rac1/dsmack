@@ -329,6 +329,7 @@ export function brokerStream(
           }
         }
         answer.stopReason = options.signal?.aborted ? "aborted" : "error";
+        if (options.signal?.aborted) answer.failure = replyFailure(new DOMException("Request aborted", "AbortError"));
         answer.errorMessage = answer.failure
           ? (answer.failure.interrupted ? "Interrupted · " : "") + answer.failure.message : e.message;
         answer.errorCode = e.code;
@@ -369,9 +370,10 @@ export function modelTranscript(context) {
     } else if (message.role === "assistant") {
       // Keep failed attempts in the page, but never replay a partial answer as
       // completed model output when the user retries or sends another turn.
-      if (message.stopReason === "error" || message.stopReason === "aborted") continue;
+      const failed = message.stopReason === "error" || message.stopReason === "aborted";
       const calls = message.content.filter(c => c.type === "toolCall");
-      messages.push({ role: "assistant", content: contentText(message.content) || null,
+      if (failed && !calls.length) continue;
+      messages.push({ role: "assistant", content: failed ? null : contentText(message.content) || null,
         ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.arguments) } })) } : {}) });
     } else if (message.role === "user") messages.push({ role: "user", content: contentText(message.content) });
   }

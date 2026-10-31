@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply } from './reply-recovery.mjs';
+import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from './reply-recovery.mjs';
 
 test('offline, broker restart, provider and credit failures identify an action', () => {
   const offline = replyFailure(Error('network error'), { partial: true, online: false });
@@ -41,4 +41,23 @@ test('retry is offered only for the latest retryable failed assistant and distin
   assert.match(meteredReply({dispatched:true,settled:false}),/not yet confirmed.*ledger first/);
   assert.match(meteredReply({dispatched:true,settled:true,costNanoUsd:'300000'}),/\$0.000300.*new metered request/);
   assert.match(meteredReply({dispatched:false}),/not sent; no model charge/);
+});
+
+test('cancelled replies allow retry and unfinished calls get one failed result', () => {
+  const cancelled = { role: 'assistant', stopReason: 'aborted', failure: replyFailure(new DOMException('Request aborted', 'AbortError')), content: [] };
+  assert.equal(retryCandidate([cancelled]), cancelled);
+  const messages = [{ role: 'assistant', content: [
+    { type: 'toolCall', id: 'lost', name: 'bash' }, { type: 'toolCall', id: 'done', name: 'read' }] },
+    { role: 'toolResult', toolCallId: 'done', isError: false }];
+  failOrphanedTools(messages, 'Guest disconnected; execution was not retried.');
+  failOrphanedTools(messages, 'Must not replace the result.');
+  const lost = messages.filter(m => m.toolCallId === 'lost');
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0].isError, true);
+  assert.match(lost[0].content[0].text, /Guest disconnected/);
+  assert.equal(messages.filter(m => m.toolCallId === 'done').length, 1);
+  const lostReply = { ...cancelled, content: [{ type: 'toolCall', id: 'cancelled', name: 'bash' }] };
+  const history = [lostReply];
+  failOrphanedTools(history, 'Cancelled');
+  assert.equal(retryCandidate(history), lostReply);
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyMessage, Wallet, keccak256 } from "ethers";
+import { backend, ready, send, publicHeaders, reservation, partialCredit, setPartialCredit } from "./test-fixtures/browser-broker.mjs";
 import { sealArtifact, sharedScope, viewerSessionId } from "./artifact-share.mjs";
 import { artifactTestServer } from "./artifact-test-server.mjs";
 const base = process.env.BASE_URL || "http://127.0.0.1:18731/private-agent/";
@@ -22,165 +22,11 @@ const browser = process.env.PLAYWRIGHT_CDP_URL
     args: ["--no-sandbox",...tls.args],
   });
 await mkdir(evidence, { recursive: true });
-const model = "deepseek-ai/DeepSeek-V4-Flash", modelKey = Wallet.createRandom();
+
 const report = {
   scope: "Browser wallet, credit and encryption boundaries",
   cases: [],
 };
-const canonical = (o) =>
-  JSON.stringify(
-    Object.fromEntries(Object.keys(o).sort().map((key) => [key, o[key]])),
-  );
-let partialCredit;
-const reservation = (body) => BigInt(
-  Buffer.byteLength(JSON.stringify(body)) + 256 +
-    64 * body.messages.length + body.max_tokens,
-) * 1500n;
-const publicHeaders = {
-  "content-type": "application/json",
-  "access-control-allow-origin": new URL(base).origin,
-  "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
-};
-async function backend(page, kind) {
-  const cfg = await (await page.request.get(new URL("config.json", base).href))
-    .json();
-  cfg.syncAnchorCodeHash = keccak256("0x6000");
-  await page.route("**/config.json", route => route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));
-  await page.route(cfg.rpc, route => {
-    const raw = route.request().postDataJSON();
-    const reply = r => ({jsonrpc:"2.0",id:r.id,result:r.method==="eth_chainId"?"0x14a34":r.method==="eth_getCode"?"0x6000":"0x"+"0".repeat(128)});
-    return route.fulfill({headers:publicHeaders,body:JSON.stringify(Array.isArray(raw)?raw.map(reply):reply(raw))});
-  });
-  const calls = [];
-  let recoveredEnded = false;
-  await page.route("**/relay-broker/**", async (route) => {
-    const req = route.request(),
-      path = new URL(req.url()).pathname.replace("/relay-broker", "");
-    const responseHeaders = { ...publicHeaders, "access-control-allow-origin": req.headers().origin || publicHeaders["access-control-allow-origin"] };
-    if (req.method() === "OPTIONS") return route.fulfill({status: 204, headers: responseHeaders});
-    const body = req.method() === "POST" ? req.postDataJSON() : undefined;
-    calls.push({ path, method: req.method(), body });
-    const respond = (value, status = 200) =>
-      route.fulfill({
-        status,
-        headers: responseHeaders,
-        body: JSON.stringify(value),
-      });
-    if (path === "/key") {
-      return respond({ algorithm: "Ed25519", public_key: cfg.brokerKey });
-    }
-    if (path === "/payments/key") {
-      return respond({
-        address: cfg.grantSigner,
-        chainId: 84532,
-        escrow: cfg.escrow,
-        codeHash: cfg.codeHash,
-      });
-    }
-    if (path === "/payments/classes") return respond([]);
-    if (path === "/inference/quote") {
-      return respond({
-        configured: true,
-        mode: "broker-e2ee",
-        provider: "near",
-        model,
-        starterCreditNanoUsd: "250000000",
-        maxOutputTokens: 512,
-        maxNanoUsdPerToken: "1500",
-        maxRequestBytes: 32768,
-      });
-    }
-    if (body) {
-      const { sig, ...signed } = body;
-      assert.equal(
-        verifyMessage(canonical(signed), sig).toLowerCase(),
-        body.wallet.toLowerCase(),
-        "wallet action signature",
-      );
-    }
-    if (path === "/sync/head") return respond({head:null});
-    if (path === "/workspaces/head") return respond({head:null});
-    if (path.startsWith("/sync/")) return respond({ error: {
-      code: "SYNTHETIC_SYNC_UNAVAILABLE",
-      message: "Encrypted sync is unavailable in this inference fixture.",
-    } }, 503);
-    const credit = {
-      wallet: body?.wallet?.toLowerCase(),
-      model,
-      mode: "broker-e2ee",
-      grantedNanoUsd: "250000000",
-      spentNanoUsd: "0",
-      remainingNanoUsd: kind === "insufficient" ? "1" : kind === "partial" ? partialCredit : "250000000",
-      reservedNanoUsd: "0",
-      usedTokens: "0",
-      pendingInferenceId: null,
-    };
-    if (kind === "recovery" && (path === "/agent/status" || path === "/agent/end")) {
-      if (path === "/agent/end") recoveredEnded = true;
-      return respond({ sessionId: body.sessionId, active: !recoveredEnded, guestSeconds: 17, credit });
-    }
-    if (path === "/inference/credit" || path === "/inference/usage") {
-      return respond(credit);
-    }
-    if (path === "/inference/prepare") {
-      return respond({
-        ...credit,
-        sessionId: "12".repeat(16),
-        modelPublicKey: kind === "key"
-          ? Wallet.createRandom().signingKey.publicKey.slice(4)
-          : modelKey.signingKey.publicKey.slice(4),
-        expiresAt: Math.floor(Date.now() / 1000) + 60,
-        attestation: {
-          mode: "broker-e2ee",
-          provider: "near",
-          model: kind === "model" ? model + "-other" : model,
-          verification: "verified",
-          verifier: "synthetic-browser-boundary",
-          nonce: kind === "nonce" ? "00".repeat(32) : body.attestationNonce,
-          verifiedAt: Math.floor(Date.now() / 1000),
-          gateway: {
-            signingAddress: "0x" + "11".repeat(20),
-            tlsFingerprint: "22".repeat(32),
-          },
-          models: [{ model, signingAddress: modelKey.address }],
-          tls: {
-            checkedBy: "broker",
-            browserObservable: false,
-            binding: "spki",
-          },
-        },
-      });
-    }
-    if (path === "/inference/chat") {
-      return respond({
-        error: {
-          code: "SYNTHETIC_STOP",
-          message: "Encrypted request captured; no provider call",
-        },
-      }, 503);
-    }
-    throw new Error("Unexpected synthetic route " + path);
-  });
-  return calls;
-}
-async function ready(page) {
-  await page.goto(base);
-  await page.waitForFunction(() =>
-    document.documentElement.dataset.ready === "true"
-  );
-  await page.waitForFunction(() =>
-    document.querySelector("#service").textContent.startsWith("Chat ready")
-  );
-}
-async function send(page, text) {
-  const editor = page.locator("agent-interface message-editor");
-  const input = editor.locator('textarea,[contenteditable="true"]').first();
-  await input.fill(text);
-  const button = editor.getByRole("button", { name: /send/i });
-  if (await button.count()) await button.first().click();
-  else await input.press("Enter");
-}
 async function alert(page, pattern) {
   await page.waitForFunction(
     (source) => {
@@ -283,11 +129,11 @@ try {
         return route.fulfill({ status: 503, headers: publicHeaders, body: "{}" });
       });
     }
-    await page.locator("#discover").evaluate(button => { button.closest("details").open = true; });
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
     await page.locator("#discover").click();
     await alert(page, "Chain directory failed");
     const shown = await page.locator("#directory-status").innerText();
-    assert.match(shown, /Directory: chain/);
+    assert.equal(await page.locator("#directory-status").getAttribute("data-path"), "chain");
     assert.match(shown, /Broker guest directory unavailable.*500/);
     assert.match(shown, /Chain directory failed.*503/);
     assert.equal(brokerReads, 1, "Outage discovery must not silently retry the broker");
@@ -302,6 +148,7 @@ try {
     await page.locator("#used-before").click();
     assert(await page.locator("#continuity-panel").isVisible());
     assert(await page.locator("#enroll-email").isDisabled());
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
     await page.locator("#use-another-device").click();
     await page.locator("#start-fresh").click();
     await page.waitForFunction(() => document.querySelector("#artifacts-host artifacts-panel"));
@@ -319,7 +166,7 @@ try {
       await page.locator("#node-status").textContent(),
       /Approved sandbox policy included/,
     );
-    assert.match(await page.locator("#repository-status").textContent(), /greet.txt/);
+    assert.equal(await page.locator("#repo").isEnabled(), true);
     await send(page, marker);
     await alert(page, "SYNTHETIC_STOP");
     await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("message-editor").isStreaming);
@@ -338,8 +185,8 @@ try {
     assert(calls.some((r) => r.path === "/inference/credit"));
     const chat = calls.find((r) => r.path === "/inference/chat");
     assert(chat && !JSON.stringify(chat.body).includes(marker));
-    partialCredit = (reservation(chat.body.body) - 200n * 1500n).toString();
-    assert.equal(await page.locator("#wallet-tools").isVisible(), true);
+    setPartialCredit((reservation(chat.body.body) - 200n * 1500n).toString());
+    assert.equal(await page.locator("#wallet-tools").getAttribute("hidden"), null);
   });
   await run("guest-is-lazy-until-a-tool-call", "valid", async (page, calls) => {
     assert.equal(await page.locator("#end-session").isDisabled(), true);
@@ -406,7 +253,8 @@ try {
     assert.equal(await page.locator("#end-session").isEnabled(), true);
     assert.equal(await page.locator("#download").isDisabled(), true);
     assert.match(await page.locator("user-message").innerText(), /Saved conversation survives/);
-    assert.equal(await page.locator("#attestations .evidence-item").count(), 1);
+    assert.equal(await page.locator("#verified").isVisible(), true);
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
     await page.locator("#end-session").click();
     await page.waitForFunction(() => document.querySelector("#guest-status").dataset.state === "released");
     assert(calls.some(r => r.path === "/agent/status" && r.body.wallet.toLowerCase() === wallet));
@@ -494,10 +342,7 @@ try {
       for (const tool of chat.body.body.tools) {
         for (const field of ["name", "description", "parameters"]) assert.match(tool.function[field], /^04[0-9a-f]+$/i);
       }
-      assert.equal(
-        await page.locator("#attestations .evidence-item").count(),
-        1,
-      );
+      assert.equal(await page.locator("#verified").isVisible(), true);
     },
   );
 } finally {

@@ -13,10 +13,10 @@ const app = new URL('./', import.meta.url).pathname;
 await mkdir(app+'local-data', {recursive:true});
 const temporary = await mkdtemp(app+'local-data/artifact-model-tests-');
 after(() => rm(temporary, {recursive:true,force:true}));
-await build({ stdin:{ contents:`export {ArtifactModels} from './artifact-models.mjs';export {brokerStream} from './inference.mjs';`,resolveDir:app },
+await build({ stdin:{ contents:`export {ArtifactModels} from './artifact-models.mjs';export {brokerStream,modelTranscript} from './inference.mjs';`,resolveDir:app },
   outfile:temporary+'/client.mjs',bundle:true,platform:'node',format:'esm',packages:'external',
   alias:{'@sandbox':resolve(app,'../compute-node/browser/sandbox.mjs'),'npm:ethers@6.17.0':'ethers'} });
-const { ArtifactModels, brokerStream } = await import(pathToFileURL(temporary+'/client.mjs'));
+const { ArtifactModels, brokerStream, modelTranscript } = await import(pathToFileURL(temporary+'/client.mjs'));
 globalThis.window = { location:{origin:'https://viewer.invalid'} };
 const model = 'fixture/attested-artifact', scope = JSON.stringify(['conversation','example.html']);
 const canonical = body => JSON.stringify(Object.fromEntries(Object.keys(body).sort().map(k=>[k,body[k]])));
@@ -202,4 +202,18 @@ test('another device settlement refreshes budget without attributing its cost or
   assert.equal(result.text,'Isolated answer');assert.equal(result.usage.costNanoUsd,null);
   assert.equal(result.usage.cost.total,null);assert.equal(result.usage.costUnknown,true);
   assert.equal(result.usage.totalTokens,12);assert.equal((await f.state.read(scope)).budget.spentNanoUsd,'300000');
+});
+
+test('a stream lost during a tool call sends its failed result to the next model turn', async () => {
+  const { failOrphanedTools } = await import('./reply-recovery.mjs');
+  const messages = [{ role: 'user', content: 'Inspect the code' },
+    { role: 'assistant', stopReason: 'error', content: [
+      { type: 'text', text: 'Unfinished answer' },
+      { type: 'toolCall', id: 'lost-call', name: 'bash', arguments: { command: 'pwd' } }] }];
+  failOrphanedTools(messages, 'Guest disconnected. Execution was not retried.');
+  const transcript = modelTranscript({ messages }).messages;
+  assert.equal(transcript[1].content, null);
+  assert.equal(transcript[1].tool_calls[0].id, 'lost-call');
+  assert.equal(transcript[2].tool_call_id, 'lost-call');
+  assert.match(transcript[2].content, /Guest disconnected/);
 });

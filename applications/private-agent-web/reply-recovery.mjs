@@ -5,7 +5,10 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   const code = error?.code || detail.match(/^([A-Z_]+):/)?.[1];
   const interrupted = !!partial;
   let category, message, retryable = true;
-  if (/CREDIT_EXHAUSTED|(?:ARTIFACT_)?BUDGET_EXHAUSTED/.test(code || detail)) {
+  if (/request.*abort|operation.*abort/i.test(detail)) {
+    category = "cancelled";
+    message = "Reply cancelled. Send a message or Retry.";
+  } else if (/CREDIT_EXHAUSTED|(?:ARTIFACT_)?BUDGET_EXHAUSTED/.test(code || detail)) {
     category = "credit";
     message = /^(?:ARTIFACT_)?BUDGET_EXHAUSTED$/.test(code || "")
       ? "ARTIFACT_BUDGET_EXHAUSTED: Artifact credit used up. Increase its allowed model budget before trying again."
@@ -39,8 +42,8 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
 }
 
 export function retryCandidate(messages) {
-  const last = messages.findLast(message => message.role !== "artifact" && message.role !== "system");
-  if (last?.role !== "assistant" || last.stopReason !== "error" || !last.failure?.retryable) return;
+  const last = messages.findLast(message => message.role !== "artifact" && message.role !== "system" && message.role !== "toolResult");
+  if (last?.role !== "assistant" || !["error", "aborted"].includes(last.stopReason) || !last.failure?.retryable) return;
   return last;
 }
 
@@ -61,4 +64,21 @@ export function settleInterruptedReply(reply, ledger) {
   delete billing.pendingReason;
   reply.usage.cost.total = Number(charge.costNanoUsd) / 1e9;
   return true;
+}
+
+// Interrupted model turns and restored chats may contain calls core never ran.
+// Pair each once so the UI and the next model request see the same failure.
+export function failOrphanedTools(messages, reason) {
+  const settled = new Set(messages.filter(m => m.role === "toolResult").map(m => m.toolCallId));
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const results = message.content.filter(p => p.type === "toolCall" && !settled.has(p.id)).map(call => {
+      settled.add(call.id);
+      return { role: "toolResult", toolCallId: call.id, toolName: call.name, isError: true,
+        content: [{ type: "text", text: reason }], details: {}, timestamp: Date.now() };
+    });
+    messages.splice(i + 1, 0, ...results);
+    i += results.length;
+  }
 }
