@@ -96,6 +96,23 @@ class PoolTests(unittest.TestCase):
             result = pool.preflight(Path('/state'), [{'path': Path('/owned')}])
             self.assertEqual(result['owned_runner_sessions'], ['/owned/session.json'])
 
+    def test_shared_boot_lock_serializes_registration_across_pool_processes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            first, second=self.instance(root), self.instance(root)
+            first.args.pool_root=second.args.pool_root=root
+            try:
+                first.tick()
+                second.tick()
+                first.launch.assert_called_once()
+                second.launch.assert_not_called()
+                first.boot_lock.close(); first.boot_lock=None
+                second.tick()
+                second.launch.assert_called_once()
+            finally:
+                for instance in (first,second):
+                    if instance.boot_lock:instance.boot_lock.close()
+
     def test_host_exit_without_guest_closure_is_not_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); (root/'out').mkdir(); console = root/'out/console-v3.log'
@@ -109,7 +126,8 @@ class PoolTests(unittest.TestCase):
     def instance(self, root):
         instance = object.__new__(pool.Pool)
         instance.args = SimpleNamespace(repo=Path('/repo'), cycles=0, replace_after=450, readiness_timeout=90,
-                                        debugfs=Path('/debugfs'))
+                                        debugfs=Path('/debugfs'), pool_root=None)
+        instance.boot_lock = None
         instance.active = []; instance.stopping = False; instance.failure = None
         instance.errors_file = root/'operator-errors.json'
         instance.slots = [{'slot_id': 0, 'consecutive_failures': 0, 'last_error': None, 'retry_pending': False, 'stopped': False, 'jobs_served': 0}]; instance.last_broker_error = None; instance.errors = []

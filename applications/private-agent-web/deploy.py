@@ -20,6 +20,7 @@ APP = Path(__file__).resolve().parent
 PROJECT = "private-agent"
 sys.path.insert(0, str(APP.parents[1] / "tools"))
 from deploy_idle import wait_for_idle
+from deploy_target import WEBHOST, STAGING_HOST, project_name, source_ref
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -48,7 +49,11 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def package(dist):
+def package(dist, target="production", config_path=None):
+    config = json.loads((config_path or dist / "config.json").read_bytes())
+    if target == "staging":
+        config["broker"] = WEBHOST + "/relay-broker-staging"
+        config["tunnels"] = STAGING_HOST + "/tunnels"
     if not (dist / "index.html").is_file():
         raise ValueError("Build the page first: dist/index.html is missing")
     data = io.BytesIO()
@@ -64,19 +69,28 @@ def package(dist):
             if path.is_file():
                 if any(part.startswith(".") for part in relative.parts) or path.suffix in (".key", ".pem"):
                     raise ValueError("Built assets contain a private filename")
-                archive.add(path, arcname="dist/" + relative.as_posix(), recursive=False)
+                if relative.as_posix() == "config.json":
+                    body = json.dumps(config).encode()
+                    info = tarfile.TarInfo("dist/config.json"); info.size = len(body)
+                    archive.addfile(info, io.BytesIO(body))
+                else:
+                    archive.add(path, arcname="dist/" + relative.as_posix(), recursive=False)
     return data.getvalue()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=("staging", "production"), required=True)
     parser.add_argument("--wait-idle-minutes", type=float, default=10)
+    parser.add_argument("--config", type=Path, help="Public page config for this target, including broker signing identities")
     parser.add_argument("--dist", type=Path, default=APP / "dist")
     parser.add_argument("--evidence", type=Path, required=True)
-    parser.add_argument("--url", default="https://pod.dstack.soc1024.com")
+    parser.add_argument("--url", default=WEBHOST)
     parser.add_argument("--operator-token-sha256", required=True)
     parser.add_argument("--smtp-env", type=Path, required=True, help="Existing private page environment JSON, including email receiver configuration")
     args = parser.parse_args()
+    ref = source_ref(APP.parents[1], args.target)
+    project_name_value = project_name(PROJECT, args.target)
     if args.operator_token_sha256 and not re.fullmatch(r"[0-9a-f]{64}",args.operator_token_sha256):
         raise ValueError("operator token SHA256 must be lowercase hex")
     smtp_env = json.loads(args.smtp_env.read_text())
@@ -86,8 +100,7 @@ def main():
         raise ValueError("The existing page environment must include EMAIL_RECOVERY_ADDRESS")
     if any(not isinstance(value, str) for value in smtp_env.values()):
         raise ValueError("SMTP configuration values must be strings")
-    archive = package(args.dist.resolve())
-    ref = subprocess.check_output(["git", "-C", str(APP), "rev-parse", "HEAD"], text=True).strip()
+    archive = package(args.dist.resolve(), args.target, args.config)
     args.evidence.mkdir(parents=True, exist_ok=True)
     admin = token()
     base = args.url.rstrip("/")
@@ -111,8 +124,8 @@ def main():
     if "shared" not in substrate["isolation_modes"]:
         raise ValueError("Webhost does not support shared Deno")
     manifest = {
-        "name": PROJECT,
-        "source": "tarball://" + PROJECT,
+        "name": project_name_value,
+        "source": "tarball://" + project_name_value,
         "ref": ref,
         "runtime": "deno",
         "mode": "attested",
@@ -135,12 +148,12 @@ def main():
         raise ValueError("Deployment did not select shared Deno")
     if project.get("mode") != "attested":
         wait_for_idle(base, args.wait_idle_minutes)
-        project = json.loads(api("/_api/projects/private-agent/promote", method="POST", auth=True))
+        project = json.loads(api("/_api/projects/" + project_name_value + "/promote", method="POST", auth=True))
     if project.get("mode") != "attested":
         raise ValueError("Deployment did not enter attested mode")
     for attempt in range(30):
         try:
-            page = api("/private-agent/")
+            page = api("/" + project_name_value + "/")
             if page != (args.dist / "index.html").read_bytes():
                 raise RuntimeError("Deployed page has not loaded the built index.html")
             break
@@ -148,7 +161,7 @@ def main():
             if attempt == 29:
                 raise
             time.sleep(2)
-    summary = {"url": base + "/private-agent/", "runtime": project["runtime"],
+    summary = {"url": (STAGING_HOST + "/" if args.target == "staging" else base + "/private-agent/"), "runtime": project["runtime"],
                "isolation": project["isolation"], "mode": project["mode"],
                "ref": ref}
     write(args.evidence / "result.json", summary)
