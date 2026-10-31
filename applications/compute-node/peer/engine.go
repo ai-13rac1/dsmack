@@ -51,8 +51,9 @@ func validID(s string) bool {
 }
 
 type admission struct {
-	JobID string         `json:"job_id"`
-	Grant map[string]any `json:"grant"`
+	JobID  string         `json:"job_id"`
+	Resume bool           `json:"resume,omitempty"`
+	Grant  map[string]any `json:"grant"`
 }
 
 type terms struct {
@@ -99,6 +100,7 @@ type engine struct {
 	mu             sync.Mutex
 	seen           map[string]bool
 	busy           bool
+	agent          *agentStay
 	jobsServed     int
 	lastError      string
 	closedReason   string
