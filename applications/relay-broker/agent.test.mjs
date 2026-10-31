@@ -7,16 +7,16 @@ import { AgentSessions } from "./agent.mjs";
 import { canonical, signingKey } from "./grants.mjs";
 const hex = (v) => [...new Uint8Array(v)].map(v => v.toString(16).padStart(2,"0")).join("");
 const peer = "12D3KooWPXeq29kZzJxDgCA92X16PSiM5Bv1XxAshJ8wJzYv9k6x";
-async function fixture({ starter = "250000000", lifetime = 1800, initialized = true } = {}) {
+async function fixture({ starter = "250000000", lifetime = 1800, initialized = true, inferenceCfg = {}, agentCfg = {} } = {}) {
  let now=2000000000;
  const wallet=Wallet.createRandom(), other=Wallet.createRandom();
  const key=await signingKey("12".repeat(32));
  const receiptKey=await crypto.subtle.generateKey("Ed25519",true,["sign","verify"]);
  const receipt_key=hex(await crypto.subtle.exportKey("raw",receiptKey.publicKey));
  const payments=new Payments({cfg:{},key:{},quorum:{},state:{},save:async()=>{},now:()=>now});
- const inference=new Inference({payments,cfg:{model:"fixture/model",starterCreditNanoUsd:starter},provider:{apiKey:"fixture"},now:()=>now});
+ const inference=new Inference({payments,cfg:{model:"fixture/model",starterCreditNanoUsd:starter,...inferenceCfg},provider:{apiKey:"fixture"},now:()=>now});
  const node={kind:"compute",relay_peer:peer,receipt_key,admit_until:now+lifetime};
- const broker={payments,inference,key,cfg:{},live:()=>[node],now:()=>now};
+ const broker={payments,inference,key,cfg:{agent:agentCfg},live:()=>[node],now:()=>now};
  let fleetSlots;
  const readFleet=async()=>[{publisher:"mac-one",online:true,received_at:now,updated_at:now,
   slots:fleetSlots??broker.live().map((n,slot_id)=>({slot_id,state:"ready",relay_peer:n.relay_peer}))}];
@@ -63,14 +63,86 @@ test("guest seconds reserve and settle the same credit; untrusted reports cannot
 
 test("concurrent claims hold one guest and expired unused grants release without invented usage",async()=>{
  const f=await fixture();
- const results=await Promise.allSettled([f.open(),f.open()]);
+ const spare={...f.node,relay_peer:peer+"-spare"};
+ f.broker.live=()=>[f.node,spare];
+ const requests=await Promise.all([f.node,spare].map(node=>f.signed("agent-open",{
+  conversationId:node.relay_peer,client_peer:peer,node_peer:node.relay_peer})));
+ const results=await Promise.allSettled(requests.map(request=>f.sessions.open(request)));
  assert.equal(results.filter(r=>r.status==="fulfilled").length,1);
  const first=results.find(r=>r.status==="fulfilled").value;
+ const refusal=results.find(r=>r.status==="rejected").reason;
+ assert.equal(refusal.code,"SESSION_ACTIVE");
+ assert(refusal.message.includes(first.sessionId));
  f.advance(1801);
  const status=await f.sessions.status(await f.signed("agent-status",{sessionId:first.sessionId}));
  assert.equal(status.active,false);
  assert.equal(status.credit.reservedNanoUsd,"0");
  assert.equal(status.credit.spentNanoUsd,"0");
+});
+
+test("configured wallet slot limit persists across session handlers and ending a stay frees one slot",async()=>{
+ const f=await fixture({agentCfg:{maxActiveSessionsPerWallet:2}});
+ const nodes=Array.from({length:3},(_,i)=>({...f.node,relay_peer:peer+"-slot-"+i}));
+ f.broker.live=()=>nodes;
+ const claim=async index=>f.signed("agent-open",{conversationId:"conversation-"+index,
+  client_peer:peer,node_peer:nodes[index].relay_peer});
+ const first=await f.sessions.open(await claim(0));
+ const second=await f.sessions.open(await claim(1));
+ const reloaded=new AgentSessions(f.broker,f.readFleet);
+ await assert.rejects(reloaded.open(await claim(2)),error=>{
+  assert.equal(error.code,"SESSION_ACTIVE");
+  assert(error.message.includes(first.sessionId));assert(error.message.includes(second.sessionId));
+  return true;
+ });
+ await f.sessions.status(await f.signed("agent-end",{sessionId:first.sessionId}),true);
+ const replacement=await reloaded.open(await claim(2));
+ assert.equal(replacement.active,true);
+ assert.equal(f.inference.summary(f.wallet.address.toLowerCase()).reservedNanoUsd,"600000");
+});
+
+test("HTTP broker enforces daily starter credit and wallet slots across ledger reload",async()=>{
+ const {handleRequest}=await import("./server.ts");
+ const f=await fixture({initialized:false,inferenceCfg:{dailyStarterBudgetNanoUsd:"500000000"}});
+ const dir=await Deno.makeTempDir(),path=dir+"/payments.json";
+ f.payments.save=next=>Deno.writeTextFile(path,JSON.stringify(next));
+ const spare={...f.node,relay_peer:peer+"-spare"};
+ f.broker.live=()=>[f.node,spare];
+ const [mac]=await f.readFleet();
+ await Deno.writeTextFile(dir+"/fleet.json",JSON.stringify({heartbeats:{[mac.publisher]:mac},
+  links:{[mac.publisher]:{link:{operator:f.wallet.address,kid:"fixture"}}}}));
+ const server=Deno.serve({hostname:"127.0.0.1",port:0,onListen(){}},
+  request=>handleRequest(request,f.broker,{dataDir:dir,env:{}}));
+ const post=async(path,body)=>{
+  const response=await fetch(`http://127.0.0.1:${server.addr.port}${path}`,{
+   method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  return {status:response.status,body:await response.json()};
+ };
+ const credit=async who=>post("/inference/credit",await f.signed("credit",{},who));
+ const open=async(who,node,conversationId)=>post("/agent/open",await f.signed("agent-open",{
+  conversationId,client_peer:peer,node_peer:node.relay_peer},who));
+ try {
+  assert.equal((await credit(f.wallet)).body.grantedNanoUsd,"250000000");
+  assert.equal((await credit(f.other)).body.grantedNanoUsd,"250000000");
+  const first=await open(f.wallet,f.node,"first");assert.equal(first.status,200);
+  const persisted=JSON.parse(await Deno.readTextFile(path));
+  const payments=new Payments({cfg:{},key:{},quorum:{},state:persisted,save:f.payments.save,now:f.broker.now});
+  f.broker.payments=payments;
+  f.broker.inference=new Inference({payments,cfg:f.inference.cfg,provider:{apiKey:"fixture"},now:f.broker.now});
+  const exhausted=await credit(Wallet.createRandom());
+  assert.equal(exhausted.status,402);assert.equal(exhausted.body.error.code,"STARTER_BUDGET_EXHAUSTED");
+  assert.match(exhausted.body.error.message,/free credit for today is used up/);
+  assert.equal((await credit(f.wallet)).status,200);
+  const blocked=await open(f.wallet,spare,"second");
+  assert.equal(blocked.status,409);assert.equal(blocked.body.error.code,"SESSION_ACTIVE");
+  assert(blocked.body.error.message.includes(first.body.sessionId));
+  assert.equal((await open(f.other,spare,"other-wallet")).status,200);
+  const ended=await post("/agent/end",await f.signed("agent-end",{sessionId:first.body.sessionId}));
+  assert.equal(ended.status,200);assert.equal(ended.body.active,false);
+  assert.equal((await open(f.wallet,f.node,"resumed")).status,200);
+  f.advance(86400-2000000000%86400);
+  assert.equal((await credit(Wallet.createRandom())).status,200);
+  assert.equal(JSON.parse(await Deno.readTextFile(path)).inferenceStarterGrants.grantedNanoUsd,"250000000");
+ } finally {await server.shutdown();await Deno.remove(dir,{recursive:true});}
 });
 
 test("ending before transport admission releases credit and revokes the unused grant",async()=>{
