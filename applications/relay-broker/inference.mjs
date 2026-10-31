@@ -34,6 +34,7 @@ export class Inference {
       payments,
       cfg: {
         starterCreditNanoUsd: "250000000",
+        dailyStarterBudgetNanoUsd: "5000000000",
         maxNanoUsdPerToken: "1500",
         maxOutputTokens: 512,
         ...cfg,
@@ -45,6 +46,7 @@ export class Inference {
       payments && typeof cfg?.model === "string" && cfg.model.length > 0 &&
         uint(this.cfg.starterCreditNanoUsd) &&
         BigInt(this.cfg.starterCreditNanoUsd) > 0n &&
+        uint(this.cfg.dailyStarterBudgetNanoUsd) &&
         uint(this.cfg.maxNanoUsdPerToken) &&
         BigInt(this.cfg.maxNanoUsdPerToken) > 0n &&
         Number.isSafeInteger(this.cfg.maxOutputTokens) &&
@@ -185,6 +187,7 @@ export class Inference {
     );
     await this.payments.serial(async () => {
       const state = this.payments.state;
+      const next = { ...state };
       let a = state.inferenceCredit?.[wallet];
       if (!a) {
         check(
@@ -193,6 +196,18 @@ export class Inference {
           "claim starter credit with this wallet first",
           402,
         );
+        const utcDay = new Date(this.now() * 1000).toISOString().slice(0, 10);
+        const granted = state.inferenceStarterGrants?.utcDay === utcDay
+          ? BigInt(state.inferenceStarterGrants.grantedNanoUsd)
+          : 0n;
+        const total = granted + BigInt(this.cfg.starterCreditNanoUsd);
+        check(
+          total <= BigInt(this.cfg.dailyStarterBudgetNanoUsd),
+          "STARTER_BUDGET_EXHAUSTED",
+          "free credit for today is used up; try again after 00:00 UTC",
+          402,
+        );
+        next.inferenceStarterGrants = { utcDay, grantedNanoUsd: String(total) };
         a = {
           grantedNanoUsd: String(this.cfg.starterCreditNanoUsd),
           spentNanoUsd: "0",
@@ -211,7 +226,7 @@ export class Inference {
         Object.entries(a.nonces).filter(([, at]) => at >= this.now() - 240),
       );
       await this.save({
-        ...state,
+        ...next,
         inferenceCredit: {
           ...state.inferenceCredit,
           [wallet]: { ...a, nonces: { ...nonces, [r.nonce]: r.issuedAt } },

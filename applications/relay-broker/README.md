@@ -35,6 +35,11 @@ nano-USD: 1,000,000,000 equals $1.00. The browser receives starter credit and
 requests an attested model session before encrypting its messages. A dispatch
 reserves its maximum cost; billing evidence reconciles that reservation.
 
+The example's `inference.dailyStarterBudgetNanoUsd` defaults to $5 of starter
+grants per UTC day; a new wallet gets the full $0.25 only if it fits the remaining
+budget. The counter persists with the credit ledger. `agent.maxActiveSessionsPerWallet`
+defaults to one held guest; a refused claim names the existing session.
+
 For the free Mac pool, configure `sandboxDiagnosticWorkloads` with its approved
 compute tuples. `sandbox_backhaul_peers` identifies Mac peers permitted to open
 the in-process libp2p backhaul.
