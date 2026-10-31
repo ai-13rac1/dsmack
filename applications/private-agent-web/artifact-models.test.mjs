@@ -14,6 +14,12 @@ await mkdir(app+'local-data', {recursive:true});
 const temporary = await mkdtemp(app+'local-data/artifact-model-tests-');
 after(() => rm(temporary, {recursive:true,force:true}));
 await build({ stdin:{ contents:`export {ArtifactModels} from './artifact-models.mjs';export {brokerStream,modelTranscript} from './inference.mjs';`,resolveDir:app },
+  // Billing/encryption tests isolate attestation; evidence.test.mjs and the
+  // browser suite verify real CPU/GPU evidence before transport dispatch.
+  plugins:[{name:'billing-attestation',setup(build){
+    build.onResolve({filter:/^\.\/evidence\.mjs$/},()=>({path:'evidence',namespace:'billing-test'}));
+    build.onLoad({filter:/.*/,namespace:'billing-test'},()=>({contents:'export const PRIVACY="fixture"; export async function checkEvidence(e){return e;}'}));
+  }}],
   outfile:temporary+'/client.mjs',bundle:true,platform:'node',format:'esm',packages:'external',
   alias:{'@sandbox':resolve(app,'../compute-node/browser/sandbox.mjs'),'npm:ethers@6.17.0':'ethers'} });
 const { ArtifactModels, brokerStream, modelTranscript } = await import(pathToFileURL(temporary+'/client.mjs'));

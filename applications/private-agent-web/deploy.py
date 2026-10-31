@@ -20,6 +20,7 @@ APP = Path(__file__).resolve().parent
 PROJECT = "private-agent"
 sys.path.insert(0, str(APP.parents[1] / "tools"))
 from deploy_idle import wait_for_idle
+from bundle import check as check_bundle
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -70,6 +71,7 @@ def package(dist):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--registry-account", required=True, help="Existing cast keystore account authorized as PageBundleRegistry publisher")
     parser.add_argument("--wait-idle-minutes", type=float, default=10)
     parser.add_argument("--dist", type=Path, default=APP / "dist")
     parser.add_argument("--evidence", type=Path, required=True)
@@ -86,6 +88,14 @@ def main():
         raise ValueError("The existing page environment must include EMAIL_RECOVERY_ADDRESS")
     if any(not isinstance(value, str) for value in smtp_env.values()):
         raise ValueError("SMTP configuration values must be strings")
+    own_cid = check_bundle(args.dist.resolve())
+    config = json.loads((args.dist / "config.json").read_text())
+    registry = config["pageBundleRegistry"]
+    if len(registry["rpcs"]) != 2 or registry["rpcs"][0] == registry["rpcs"][1]:
+        raise ValueError("Page bundle registry requires two independent RPCs")
+    for hashes in ("gatewayComposeHashes", "modelComposeHashes"):
+        if not config["nearAttestation"][hashes]:
+            raise ValueError("Configure reviewed NEAR compose hashes before deployment")
     archive = package(args.dist.resolve())
     ref = subprocess.check_output(["git", "-C", str(APP), "rev-parse", "HEAD"], text=True).strip()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -148,7 +158,15 @@ def main():
             if attempt == 29:
                 raise
             time.sleep(2)
-    summary = {"url": base + "/private-agent/", "runtime": project["runtime"],
+    # Publish only after the new page is served; failed transactions propagate.
+    subprocess.run(["cast", "send", "--rpc-url", registry["rpcs"][0], "--chain", "84532",
+                    "--account", args.registry_account, registry["registry"], "publish(string)", own_cid], check=True)
+    for rpc in registry["rpcs"]:
+        published = subprocess.check_output(["cast", "call", "--rpc-url", rpc, "--chain", "84532",
+                                           registry["registry"], "latestCID()(string)"], text=True).strip().strip('"')
+        if published != own_cid:
+            raise ValueError("Published bundle CID differs from deployed page")
+    summary = {"bundleCID": own_cid, "registry": registry["registry"], "url": base + "/private-agent/", "runtime": project["runtime"],
                "isolation": project["isolation"], "mode": project["mode"],
                "ref": ref}
     write(args.evidence / "result.json", summary)

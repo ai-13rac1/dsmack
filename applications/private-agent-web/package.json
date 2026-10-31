@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node build.mjs",
     "test:browser": "node boundary.test.mjs",
-    "test:ux": "node ux-browser.test.mjs"
+    "test:ux": "node ux-browser.test.mjs",
+    "test:trust": "node trust-browser.test.mjs"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "17.0.0",

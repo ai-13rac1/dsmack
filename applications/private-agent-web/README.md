@@ -111,6 +111,31 @@ apply the guest's host allowlist to commands.
 
 The saved wallet renders before chat sync, broker checks and RPC calls. A first visit offers Start fresh or recovery; creating a wallet is explicit. After receiving credit or saving a chat, add a passkey or email on the original browser to return on another device.
 
+The build produces `dist/page-bundle.tar`: a deterministic USTAR payload of the
+page assets and configuration. Its CIDv1 raw/SHA-256 identifies the payload;
+`index.html` adds that CID as a label after archiving to avoid self-reference.
+The page compares its label with `PageBundleRegistry.latestCID()` through two
+independent Base Sepolia RPCs at a common block, on startup and every minute.
+A changed version displays both CIDs without interrupting the chat.
+
+Deploy the registry once from the repository root:
+
+```sh
+forge create --root contracts contracts/src/PageBundleRegistry.sol:PageBundleRegistry \
+  --rpc-url "$BASE_SEPOLIA_RPC" --account "$DEPLOY_ACCOUNT" --broadcast \
+  --constructor-args "$PAGE_PUBLISHER"
+```
+
+Set `config.json.pageBundleRegistry` to `{ "registry": "0x…", "rpcs":
+["https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com"] }`.
+Set `nearAttestation.gatewayComposeHashes` and `modelComposeHashes` to the
+reviewed NEAR deployment compose SHA-256 hashes, then rebuild. The browser
+checks Intel TDX quotes, signer/nonce/SPKI bindings, measured configuration,
+RTMR3 events, compose-manager evidence, the E2EE model key, and NVIDIA's signed
+NRAS verdict before encrypting the prompt. Verification uses NEAR's public
+PCCS/NRAS proxies and NVIDIA's JWKS endpoint. Raw NEAR reports travel through
+the broker; its verification summary is not an input to the browser's decision.
+
 Deployment waits up to ten minutes for `/relay-broker/network` busy slots and
 `/relay-broker/inference/status` in-flight model streams to reach zero.
 `--wait-idle-minutes N` changes the wait; a timeout stops before upload.
@@ -120,7 +145,8 @@ Deploy the built page using its existing private environment JSON and operator-t
 ```sh
 python3 deploy.py --evidence /absolute/path/to/local-data/ui/deploy \
   --smtp-env /absolute/path/to/private/page-env.json \
-  --operator-token-sha256 YOUR_EXISTING_OPERATOR_TOKEN_SHA256
+  --operator-token-sha256 YOUR_EXISTING_OPERATOR_TOKEN_SHA256 \
+  --registry-account "$PAGE_PUBLISHER_ACCOUNT"
 ```
 
 Run browser boundary checks with an existing browser:
@@ -130,6 +156,21 @@ BASE_URL=http://127.0.0.1:18731/private-agent/ \
 CHROMIUM_PATH=/absolute/path/to/chromium \
 EVIDENCE=/absolute/path/to/local-data/ui npm run test:browser
 ```
+
+The deployer validates the archived bytes, uploads the page, then sends
+`publish(string)` with its CID using the existing publisher keystore account.
+It reads the publication back through both configured RPCs.
+
+Run the recorded NEAR verification and local-chain version-change flow:
+
+```sh
+forge build --root ../../contracts
+EVIDENCE=/absolute/path/to/local-data/trust node trust-browser.test.mjs
+```
+
+This uses Anvil, Chromium and the recorded public NEAR report, Intel collateral,
+NVIDIA NRAS token and public signing keys in `test-fixtures/near/`. The test fixes the
+clock and challenge to the recording and keeps all inference local.
 
 Run the chat recovery and capacity flows against a local mocked broker (requires
 Chromium and `openssl`):

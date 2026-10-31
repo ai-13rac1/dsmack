@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { verifyMessage, Wallet, keccak256 } from "ethers";
 const base = process.env.BASE_URL || "http://127.0.0.1:18731/private-agent/";
-const model = "deepseek-ai/DeepSeek-V4-Flash", modelKey = Wallet.createRandom();
+import { report, model, policy, replayNear } from "./near.mjs";
+const modelPublicKey = report.model_attestations[0].signing_public_key;
 const canonical = (o) =>
   JSON.stringify(
     Object.fromEntries(Object.keys(o).sort().map((key) => [key, o[key]])),
@@ -19,9 +20,11 @@ export const publicHeaders = {
   "access-control-allow-headers": "content-type",
 };
 export async function backend(page, kind) {
+  await replayNear(page);
   const cfg = await (await page.request.get(new URL("config.json", base).href))
     .json();
   if (kind === "ux") cfg.broker = new URL("/relay-broker", base).href;
+  cfg.nearAttestation = policy;
   cfg.syncAnchorCodeHash = keccak256("0x6000");
   await page.route("**/config.json", route => route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));
   await page.route(cfg.rpc, route => {
@@ -106,26 +109,15 @@ export async function backend(page, kind) {
         sessionId: "12".repeat(16),
         modelPublicKey: kind === "key"
           ? Wallet.createRandom().signingKey.publicKey.slice(4)
-          : modelKey.signingKey.publicKey.slice(4),
+          : modelPublicKey,
         expiresAt: Math.floor(Date.now() / 1000) + 60,
         attestation: {
+          report: { ...report, gateway_attestation: { ...report.gateway_attestation,
+            request_nonce: kind === "nonce" ? "00".repeat(32) : report.gateway_attestation.request_nonce } },
           mode: "broker-e2ee",
           provider: "near",
           model: kind === "model" ? model + "-other" : model,
           verification: "verified",
-          verifier: "synthetic-browser-boundary",
-          nonce: kind === "nonce" ? "00".repeat(32) : body.attestationNonce,
-          verifiedAt: Math.floor(Date.now() / 1000),
-          gateway: {
-            signingAddress: "0x" + "11".repeat(20),
-            tlsFingerprint: "22".repeat(32),
-          },
-          models: [{ model, signingAddress: modelKey.address }],
-          tls: {
-            checkedBy: "broker",
-            browserObservable: false,
-            binding: "spki",
-          },
         },
       });
     }
