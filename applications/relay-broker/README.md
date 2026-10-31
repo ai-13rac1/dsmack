@@ -100,6 +100,45 @@ preparation and deployment require clean source contained in locally recorded
 main; deployment also requires the prepared ref to equal HEAD. Neither command
 fetches refs. Staging accepts a preparation from any commit.
 
+Bootstrap a new staging project without a provider envelope first, on the
+coordinator's deployment machine:
+
+```sh
+python3 applications/relay-broker/deploy-inference.py prepare --target staging \
+  --config "$STAGING_BROKER_CONFIG" --operator-token-sha256 "$OPERATOR_HASH" \
+  --out "$STAGING_BOOTSTRAP"
+python3 applications/relay-broker/deploy-inference.py deploy --target staging \
+  --prepared "$STAGING_BOOTSTRAP" --evidence "$STAGING_BOOTSTRAP_EVIDENCE" --apply
+curl --fail --silent --show-error \
+  https://pod.dstack.soc1024.com/relay-broker-staging/key
+curl --fail --silent --show-error \
+  https://pod.dstack.soc1024.com/relay-broker-staging/payments/key
+curl --fail --silent --show-error \
+  https://pod.dstack.soc1024.com/relay-broker-staging/inference/environment-key \
+  --output "$STAGING_ENVIRONMENT_KEY"
+deno run --allow-read --allow-write \
+  --allow-env=WS_NO_BUFFER_UTIL,WS_NO_UTF_8_VALIDATE \
+  applications/relay-broker/encrypt-provider-env.mjs \
+  "$STAGING_ENVIRONMENT_KEY" "$STAGING_PAYMENT_SIGNER" \
+  "$PROVIDER_KEY_PATH" "$STAGING_ENCRYPTED_ENV"
+python3 applications/relay-broker/deploy-inference.py prepare --target staging \
+  --config "$STAGING_BROKER_CONFIG" --operator-token-sha256 "$OPERATOR_HASH" \
+  --encrypted-env "$STAGING_ENCRYPTED_ENV" --out "$STAGING_PREPARED"
+python3 applications/relay-broker/deploy-inference.py deploy --target staging \
+  --prepared "$STAGING_PREPARED" --evidence "$STAGING_EVIDENCE" --apply
+```
+
+Use the new broker's public keys in the staging page config; set
+`STAGING_PAYMENT_SIGNER` to that staged payment identity. Preparation and evidence
+paths name fresh directories. Build the page with the commands in its README,
+then create its project:
+
+```sh
+python3 applications/private-agent-web/deploy.py --target staging \
+  --config "$STAGING_PAGE_CONFIG" --smtp-env "$STAGING_SMTP_ENV" \
+  --operator-token-sha256 "$OPERATOR_HASH" --evidence "$STAGING_PAGE_EVIDENCE"
+```
+
 Preparation bundles the npm dependencies with Deno. Apply uses the configured
 webhost admin credential, updates only `relay-broker`, and promotes shared Deno.
 Deployment waits up to ten minutes for `/network` busy slots and
