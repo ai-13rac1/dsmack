@@ -16,6 +16,7 @@ local-data/
 .env.*
 !.env.example
 node_modules/
+applications/egress-policy/monitor/weights/
 .DS_Store
 
 tools/parser-tests/

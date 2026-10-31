@@ -126,6 +126,11 @@ func (g *nodeGateways) start(name, listen string, policy map[string]any, hostnam
 		return err
 	}
 	args := []string{"-policy", file, "-http", listen, "-dns", "", "-upstream-proxy", os.Getenv("HTTPS_PROXY")}
+	startupTimeout := 5 * time.Second
+	if name == "broker" && os.Getenv("DSMACK_MONITOR_HASH") != "" {
+		args = append(args, "-monitor-hash", os.Getenv("DSMACK_MONITOR_HASH"), "-monitor-policy", os.Getenv("DSMACK_MONITOR_POLICY"))
+		startupTimeout = 130 * time.Second
+	}
 	if hostname != "" {
 		args = append(args, "-websocket-host", hostname)
 	}
@@ -163,7 +168,7 @@ func (g *nodeGateways) start(name, listen string, policy map[string]any, hostnam
 		}
 	case <-child.done:
 		return fmt.Errorf("%s gateway startup exit: %v", name, child.err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(startupTimeout):
 		return fmt.Errorf("%s gateway startup timeout", name)
 	}
 	deadline := time.Now().Add(3 * time.Second)

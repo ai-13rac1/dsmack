@@ -10,6 +10,7 @@ import {
 import { bytesEqual, decodeCbor, require } from "./encoding.mjs";
 import { APP_ID, verifyEnrollment } from "./enrollment.mjs";
 import { paymentBinding, paymentRunId } from "./payments.mjs";
+import { monitorPolicy } from "../../egress-policy/monitor/registry.mjs";
 export { hex, unhex };
 const enc = new TextEncoder(),
   dec = new TextDecoder("utf-8", { fatal: true }),
@@ -158,6 +159,7 @@ export async function verifyNode(registration, policy) {
     "compose broker key/build",
   );
   const env = service.environment;
+  const monitor = await monitorPolicy(env);
   require(
     service.command[6] === "/opt/compute-node/agent-mcp.mjs" &&
       env?.AGENT_MCP_SOCKET === "/run/dsmack/agent-mcp.sock" &&
@@ -177,6 +179,7 @@ export async function verifyNode(registration, policy) {
     manifestHash: await hash(policy.manifest),
     image: manifest.base_vm.os_image_hash,
     agentEnvironment: env,
+    monitor,
   };
   require(
     registration.kind === "compute" && registration.cdhash === policy.cdhash &&
