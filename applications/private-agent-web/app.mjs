@@ -878,7 +878,7 @@ function renderGuest(status) {
   if (credit) renderChatCredit();
 }
 function renderWorkspace(status) {
-  const messages = { saving: "Saving workspace…", restoring: "Restoring saved workspace…", opening: "Opening workspace…" };
+  const messages = { saving: "Saving workspace…", "save-error": "Workspace save paused. Try Save workspace again.", restoring: "Restoring saved workspace…", opening: "Opening workspace…" };
   $("workspace-status").textContent = messages[status.state] || (status.head
     ? `Workspace version ${status.head.version} saved · Kept for 30 days after last use`
     : "Files will be saved with this conversation.");
