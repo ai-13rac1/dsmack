@@ -14,7 +14,12 @@ const activeWindowSeconds = 30;
 // calls. Only the receipt key bound by the guest attestation can charge usage.
 export class AgentSessions {
   /** @param {any} broker @param {() => Promise<any[]>} readFleet */
-  constructor(broker, readFleet = async () => []) { this.b = broker; this.readFleet = readFleet; }
+  constructor(broker, readFleet = async () => []) {
+    this.b = broker; this.readFleet = readFleet;
+    this.maxActiveSessionsPerWallet = broker.cfg.agent?.maxActiveSessionsPerWallet ?? 1;
+    need(Number.isSafeInteger(this.maxActiveSessionsPerWallet) && this.maxActiveSessionsPerWallet > 0,
+      "BAD_CONFIG", "maxActiveSessionsPerWallet must be a positive integer", 503);
+  }
   active(s) {
     return !s.final && s.grant.expires_at > this.b.now() &&
       (s.receiptSeen || (s.setupUntil ?? s.grant.expires_at) > this.b.now());
@@ -64,7 +69,9 @@ export class AgentSessions {
         s.receiptSeen && !s.final && s.grant.expires_at <= b.now())) {
         throw new InferenceError("SESSION_SAVING", "workspace is still being saved; retry in 5 seconds", 409, 5);
       }
-      need(!existing.some((s) => s.wallet === wallet && this.active(s)), "SESSION_ACTIVE", "end the wallet's held guest first", 409);
+      const held = existing.filter(s => s.wallet === wallet && this.active(s));
+      need(held.length < this.maxActiveSessionsPerWallet, "SESSION_ACTIVE",
+        `wallet active guest limit (${this.maxActiveSessionsPerWallet}) reached; end an existing session: ${held.map(s => s.grant.grant_id).join(", ")}`, 409);
       const node = b.live().find((n) => n.kind === "compute" && n.relay_peer === r.node_peer);
       need(node?.receipt_key && /^[0-9a-f]{64}$/.test(node.receipt_key), "NODE_NOT_LIVE", "attested guest is unavailable", 404);
       // Read the signed heartbeat and recheck occupancy inside the same ledger

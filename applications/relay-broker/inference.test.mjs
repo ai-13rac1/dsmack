@@ -204,6 +204,52 @@ test("wallet ownership, expiry and replay protect one starter grant per wallet",
   assert.equal(f.calls(), 0);
 });
 
+test("concurrent starter claims share the default $5 daily budget and existing wallets keep their credit", async () => {
+  const f = fixture(), wallets = Array.from({ length: 21 }, () => Wallet.createRandom());
+  const results = await Promise.allSettled(wallets.map(wallet => f.credit(wallet)));
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 20);
+  const refused = results.find(r => r.status === "rejected").reason;
+  assert.equal(refused.code, "STARTER_BUDGET_EXHAUSTED");
+  assert.match(refused.message, /free credit for today is used up/);
+  assert.equal(f.saved().inferenceStarterGrants.grantedNanoUsd, "5000000000");
+  const existing = wallets[results.findIndex(r => r.status === "fulfilled")];
+  assert.equal((await f.credit(existing)).grantedNanoUsd, "250000000");
+  assert.equal(f.saved().inferenceStarterGrants.grantedNanoUsd, "5000000000");
+});
+
+test("configured starter budget survives restart, refuses partial grants and resets at midnight UTC", async () => {
+  const cfg = { dailyStarterBudgetNanoUsd: "375000000" }, f = fixture({ cfg });
+  await f.credit();
+  const other = Wallet.createRandom();
+  await assert.rejects(f.credit(other), code("STARTER_BUDGET_EXHAUSTED"));
+  assert.equal(f.payments.state.inferenceCredit[other.address.toLowerCase()], undefined);
+  const restarted = fixture({ cfg, state: f.saved() });
+  await assert.rejects(restarted.credit(other), code("STARTER_BUDGET_EXHAUSTED"));
+  assert.equal((await restarted.credit(f.wallet)).grantedNanoUsd, "250000000");
+  const day = restarted.saved().inferenceStarterGrants.utcDay;
+  restarted.advance(86400 - 2000000000 % 86400 - 1);
+  await assert.rejects(restarted.credit(other), code("STARTER_BUDGET_EXHAUSTED"));
+  restarted.advance(1);
+  assert.equal((await restarted.credit(other)).grantedNanoUsd, "250000000");
+  assert.notEqual(restarted.saved().inferenceStarterGrants.utcDay, day);
+  assert.equal(restarted.saved().inferenceStarterGrants.grantedNanoUsd, "250000000");
+  await assert.rejects(restarted.credit(), code("STARTER_BUDGET_EXHAUSTED"));
+});
+
+test("zero starter budget disables new grants and a failed save cannot consume budget", async () => {
+  const disabled = fixture({ cfg: { dailyStarterBudgetNanoUsd: "0" } });
+  await assert.rejects(disabled.credit(), code("STARTER_BUDGET_EXHAUSTED"));
+  const f = fixture({ cfg: { dailyStarterBudgetNanoUsd: "250000000" } });
+  const save = f.payments.save, claim = await f.signed("credit");
+  f.payments.save = async () => { throw Error("disk full"); };
+  await assert.rejects(f.inference.credit(claim), /disk full/);
+  assert.equal(f.payments.state.inferenceStarterGrants, undefined);
+  assert.equal(f.payments.state.inferenceCredit, undefined);
+  f.payments.save = save;
+  assert.equal((await f.inference.credit(claim)).grantedNanoUsd, "250000000");
+  assert.equal(f.saved().inferenceStarterGrants.grantedNanoUsd, "250000000");
+});
+
 test("fresh verified model sessions accept SDK ciphertext and reject plaintext or swapped keys", async () => {
   const f = fixture();
   await f.credit();
