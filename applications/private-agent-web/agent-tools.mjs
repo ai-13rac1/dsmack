@@ -230,8 +230,10 @@ export class GuestSession {
     // A prior stay can finish sealing while this browser waits for admission.
     // Read its final head before releasing a workspace key to the next guest.
     await this.workspace.latest();
+    performance.mark("dsmack:workspace:bind");
     const restored = await this.workspace.bind(client, verified.registration, this.lease);
     if (!restored) {
+      performance.mark("dsmack:repository:import");
       for (const [path, content] of this.repository()) {
         const written = await client.callTool({ name: "write", arguments: { path, content } }, { signal });
         require(!written.isError, "Repository import failed: " + JSON.stringify(written.content));
