@@ -3,13 +3,12 @@ import {
   getAddress,
   Interface,
   keccak256,
-  sha256,
-  toUtf8Bytes,
   TypedDataEncoder,
   verifyTypedData,
 } from "npm:ethers@6.17.0";
 export {
   Contract,
+  computeAddress,
   FetchRequest,
   formatEther,
   getAddress,
@@ -92,37 +91,6 @@ export const nodeBindingSigner = (escrow, envelope) =>
   );
 export const nodeBindingHash = (escrow, value) =>
   TypedDataEncoder.hash(domain(escrow), { NodeBinding }, value);
-export function binding(p, peer, compose, image) {
-  return keccak256(
-    coder.encode([
-      "bytes32",
-      "uint256",
-      "address",
-      "bytes32",
-      "bytes32",
-      "address",
-      "address",
-      "bytes32",
-      "bytes32",
-      "bytes32",
-      "bytes32",
-      "uint64",
-    ], [
-      keccak256(toUtf8Bytes("DsmackPaymentsNodeV2")),
-      CHAIN,
-      p.escrow,
-      p.node,
-      p.runId,
-      p.operator,
-      p.receiptSigner,
-      sha256(toUtf8Bytes(peer)),
-      "0x" + compose.replace(/^0x/, ""),
-      "0x" + image.replace(/^0x/, ""),
-      p.buildId,
-      p.runExpires,
-    ]),
-  );
-}
 export const json = (v) =>
   JSON.stringify(v, (_, v) => typeof v === "bigint" ? v.toString() : v);
 export const require = (ok, message) => {

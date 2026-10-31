@@ -7,6 +7,7 @@ verify the app behind a signed message.
 
 [Website](https://amiller.github.io/dsmack/) ·
 [Architecture](docs/architecture.md) ·
+[Protocol](docs/protocol.md) ·
 [Run a task](docs/running.md) ·
 [Claim a bounty](docs/participate.md) ·
 [App Attest verifiers](app-attest/README.md)

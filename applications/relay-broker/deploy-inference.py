@@ -92,6 +92,7 @@ def prepare(args):
             archive.add(REPO / "applications/browser-p2p/tunnels.mjs", arcname="applications/browser-p2p/tunnels.mjs")
             archive.add(APP / "project.json", arcname="project.json")
             archive.add(REPO / "dstack-compat/secret-release/policy.mjs", arcname="dstack-compat/secret-release/policy.mjs")
+            archive.add(REPO / "dstack-compat/binding.mjs", arcname="dstack-compat/binding.mjs")
             body = json.dumps(config).encode()
             info = tarfile.TarInfo("applications/relay-broker/config.json")
             info.size = len(body)
