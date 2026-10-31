@@ -78,17 +78,27 @@ envelope when updating an existing deployment.
 Prepare and apply a source update:
 
 ```sh
-python3 applications/relay-broker/deploy-inference.py prepare \
+python3 applications/relay-broker/deploy-inference.py prepare --target production \
   --config /absolute/path/broker-config.json \
   --operator-token-sha256 "$EXISTING_OPERATOR_TOKEN_SHA256" \
   --encrypted-env /absolute/path/near-encrypted-env.json \
   --out /absolute/path/prepared-upload
 
-python3 applications/relay-broker/deploy-inference.py deploy \
+python3 applications/relay-broker/deploy-inference.py deploy --target production \
   --prepared /absolute/path/prepared-upload \
   --url https://pod.dstack.soc1024.com \
   --evidence /absolute/path/deployment-evidence --apply
 ```
+
+To create staging, use `--target staging` on both commands, a separate preparation
+and evidence directory, and the staging broker config and encrypted provider
+environment. The upload creates `relay-broker-staging`; its API is
+`https://pod.dstack.soc1024.com/relay-broker-staging`. Preparation sets the allowed
+browser origins to `https://private-agent-staging.dstack.soc1024.com`. Configure
+staging payment, provider and storage resources in the input config. Production
+preparation and deployment require clean source contained in locally recorded
+main; deployment also requires the prepared ref to equal HEAD. Neither command
+fetches refs. Staging accepts a preparation from any commit.
 
 Preparation bundles the npm dependencies with Deno. Apply uses the configured
 webhost admin credential, updates only `relay-broker`, and promotes shared Deno.

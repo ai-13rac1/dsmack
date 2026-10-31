@@ -118,10 +118,20 @@ Deployment waits up to ten minutes for `/relay-broker/network` busy slots and
 Deploy the built page using its existing private environment JSON and operator-token SHA256:
 
 ```sh
-python3 deploy.py --evidence /absolute/path/to/local-data/ui/deploy \
+python3 deploy.py --target production --evidence /absolute/path/to/local-data/ui/deploy \
   --smtp-env /absolute/path/to/private/page-env.json \
   --operator-token-sha256 YOUR_EXISTING_OPERATOR_TOKEN_SHA256
 ```
+
+Create or update the separate staging project with the same command and
+`--target staging --config /absolute/path/staging-page.json`. Supply the staged
+broker signing identities, escrow and registry in that public config. It uploads `private-agent-staging`, served at
+`https://private-agent-staging.dstack.soc1024.com/`, and packages config URLs for
+`/relay-broker-staging` and the staging tunnel index. Production requires a clean
+source tree and HEAD contained in the locally recorded `origin/main` (or `main`
+when no remote main is recorded). Staging accepts topic commits. Both targets
+retain the shared-runtime idle guard. The coordinator supplies the staging page
+SMTP environment and configures its inbound email routing for that hostname.
 
 Run browser boundary checks with an existing browser:
 

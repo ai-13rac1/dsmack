@@ -128,7 +128,7 @@ VENV/bin/python applications/compute-node/mac-pool.py \
   --relay MAC_RELAY_BINARY --relay-key MAC_RELAY_KEY \
   --cloudflared CLOUDFLARED --publisher-key MAC_PUBLISHER_KEY \
   --publisher-address PUBLISHER_ADDRESS --registry TUNNEL_REGISTRY \
-  --pool-version SOURCE_COMMIT \
+  --pool-version SOURCE_COMMIT --restart-config SHORT_FRESH_STATE/restart.json \
   --broker https://pod.dstack.soc1024.com/relay-broker \
   --index https://pod.dstack.soc1024.com/private-agent/tunnels
 ```
@@ -138,6 +138,75 @@ assertions, original result disks and signed receipts, retires temporary disks,
 clears its discovery hints, and stops its relay, tunnel and helper. Each
 `run-*/evidence/` directory retains the guest evidence and reclaimed-space record.
 No launchd or systemd service is installed.
+
+Restart the pool with `SIGHUP` to the launcher. It validates the replacement's
+files, measured base and template hashes and expected workload/compose hashes,
+then starts a new pool behind the existing relay and proxy. One boot lock
+serializes guest identity assignment across generations. A single combined fleet
+heartbeat and discovery directory retain the old guests throughout overlap.
+After a new ready guest has a live verified broker registration and the combined
+heartbeat appears in `/network`, the launcher sends TERM to the old pool. That
+pool stops rotating and retains its guests through their measured admission and
+`--drain-seconds` windows. A rejected config, failed boot or readiness timeout
+keeps the serving pool rotating; the timeout drains only the candidate.
+
+Use absolute paths in `restart.json`. Generate it from a completed, immutable
+staged release (the hashes are launch expectations, checked before starting):
+
+```sh
+VENV/bin/python - "$NEW_RUNNER" "$NEW_WORKLOAD" "$OPERATOR" "$SOURCE_COMMIT" <<'PY' > "$STATE/restart.json.tmp"
+import hashlib, json, sys
+from pathlib import Path
+runner, workload, operator, version = sys.argv[1:]
+def sha(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+w = Path(workload)
+print(json.dumps(dict(runner=runner, workload=workload, operator=operator,
+    pool_version=version, workload_sha256=sha(w/'workload.img'),
+    manifest_sha256=sha(w/'compose-manifest.json'))))
+PY
+mv "$STATE/restart.json.tmp" "$STATE/restart.json"
+kill -HUP "$(cat "$STATE/launcher.pid")"
+```
+
+The replacement must use the existing relay peer, broker and tunnel index;
+changes to those shared transports require a separate transport deployment.
+`--restart-timeout SECONDS` changes the default 300-second readiness budget.
+Only one replacement/drain runs at a time.
+
+For the first upgrade from the legacy launcher, run the new `mac-pool.py` command
+above with the **existing** runner, workload, state and transport arguments,
+adding `--adopt-launcher "$OLD_LAUNCHER_PID"`. Run it in a new background process
+and write stdout to `"$STATE/launcher-mbb.log"`. The handoff freezes the two old
+controllers, validates the active guest drivers from their existing launch and
+attestation records, and transfers those drivers and transport groups to the new
+controller. It kills only the frozen controllers after the new pool acknowledges
+ownership. If any old guest is still booting, the command refuses and resumes the
+old controllers; retry after that guest attests. After the new launcher writes
+`launcher.pid`, create `restart.json` and send HUP as above. No guest, native
+runner, relay or workload rebuild is needed for this Python-only upgrade.
+
+With shell variables set to the existing installation, the first handoff command
+is (run from the updated checkout):
+
+```sh
+nohup "$PYTHON" applications/compute-node/mac-pool.py \
+  --runner "$RUNNER" --workload "$WORKLOAD" --state "$STATE" \
+  --operator "$OPERATOR" --relay "$RELAY" --relay-key "$RELAY_KEY" \
+  --cloudflared "$CLOUDFLARED" --publisher-key "$PUBLISHER_KEY" \
+  --publisher-address "$PUBLISHER_ADDRESS" --registry "$REGISTRY" \
+  --broker "$BROKER" --index "$INDEX" --pool-version "$(git rev-parse HEAD)" \
+  --adopt-launcher "$OLD_LAUNCHER_PID" --restart-config "$STATE/restart.json" \
+  > "$STATE/launcher-mbb.log" 2>&1 &
+```
+
+Include the existing `--ipfs-bin`, `--ipfs-car`, `--ipfs-state` and
+`--publication-rpc` options when present on the legacy command. Use a new stdout
+log as above; existing transport logs remain open through the handoff.
 
 ### Encrypted workspace store
 

@@ -3,6 +3,7 @@
 import argparse
 import ast
 import gzip
+import fcntl
 import hashlib
 import json
 import os
@@ -82,6 +83,29 @@ def sha(path):
     return digest.hexdigest()
 
 
+def validate_config(runner, workload, config):
+    """Reject a staged release with missing or mismatched launch inputs before boot."""
+    def match(path, expected):
+        if sha(path) != expected:
+            raise ValueError('SHA256 mismatch: ' + str(path))
+    manifest = json.loads((workload/'compose-manifest.json').read_bytes())
+    measured_size(manifest, config)
+    base = manifest['base_vm']
+    for filename, field in [('Image', 'kernel_sha256'), ('initramfs.cpio.gz', 'initrd_sha256'),
+                            ('rootfs.squashfs.verity', 'rootfs_sha256'), ('metadata.json', 'metadata_sha256'),
+                            ('sha256sum.txt', 'os_image_hash')]:
+        match(runner/'base'/filename, base[field])
+    meta = json.loads((runner/'base/metadata.json').read_bytes())
+    cmdline = dict(x.split('=', 1) for x in meta['cmdline'].split() if '=' in x)
+    for name in ('scratch', 'result'):
+        match(runner/'runtime/base'/(name+'-template.ext4'), cmdline['dstack.'+name+'_template_sha256'])
+    for path in (runner/'DsmackRunner.app/Contents/MacOS/dsmack-runner',
+                 runner/'runtime/helper/gvproxy-darwin', runner/'enrollment/keyId.txt', workload/'workload.img'):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    return manifest
+
+
 def ready_node(nodes, previous, measurement, image):
     return next((n for n in nodes if n['relay_peer'] not in previous and n.get('kind') == 'compute'
                  and n.get('manifest_sha256') == measurement and n.get('os_image_hash') == image
@@ -93,7 +117,7 @@ def should_replace(active, now, replace_after):
     return not serving or now - max(n['started'] for n in serving) >= replace_after
 
 
-def preflight(state, active):
+def preflight(state, active, pool_root=None):
     free = shutil.disk_usage(state).free
     if free < 12 * (1 << 30):
         raise RuntimeError('less than 12 GiB free on Mac')
@@ -101,6 +125,8 @@ def preflight(state, active):
     if result.returncode not in (0, 1):
         raise RuntimeError('Mac runner process probe failed')
     owned_sessions = {str(n['path']/'session.json') for n in active}
+    if pool_root:
+        owned_sessions.update(str(path) for path in pool_root.glob('*/run-*/session.json'))
     for line in result.stdout.splitlines():
         pid = int(line.split()[0])
         command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
@@ -239,6 +265,7 @@ def preserve_and_retire(run, repo):
 class Pool:
     def __init__(self, args):
         self.args = args
+        self.boot_lock = None
         self.active = []
         self.launched = 0
         self.stopping = False
@@ -307,7 +334,7 @@ class Pool:
             return None
 
     def launch(self, slot):
-        check = preflight(self.args.state, self.active)
+        check = preflight(self.args.state, self.active, self.args.pool_root)
         nodes = self.nodes()
         if nodes is None:
             raise BrokerUnavailable()
@@ -329,6 +356,9 @@ class Pool:
         self.event('launch', slot_id=slot['slot_id'], run=str(run), driver_pid=proc.pid)
 
     def tick(self):
+        if self.boot_lock and not any(n['node'] is None for n in self.active):
+            self.boot_lock.close()
+            self.boot_lock = None
         now = time.monotonic()
         if any(n['node'] for n in self.active) and now-self.last_status_poll >= 15:
             current = self.nodes()
@@ -406,6 +436,14 @@ class Pool:
                 if (not slot['stopped'] and len(active) < 2 and not any(n['node'] is None for n in active)
                         and (slot['retry_pending'] or should_replace(active, now, self.args.replace_after))):
                     try:
+                        if self.args.pool_root:
+                            lock = (self.args.pool_root/'boot.lock').open('a')
+                            try:
+                                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:
+                                lock.close()
+                                break
+                            self.boot_lock = lock
                         self.launch(slot)
                     except MacOccupied:
                         self.event('waiting_for_other_lane', slot_id=slot['slot_id'])
@@ -456,6 +494,8 @@ class Pool:
                         self.remember_error({'at': int(time.time()), 'slot_id': None, 'stage': 'heartbeat', **record})
                     self.event(name, **record)
             if not self.active and (self.stopping or all(s['stopped'] for s in self.slots) or (self.args.cycles and self.launched >= self.args.cycles)):
+                if self.boot_lock:
+                    self.boot_lock.close()
                 break
             time.sleep(2)
 
@@ -469,6 +509,8 @@ def main():
     parser.add_argument('--runner', required=True, type=Path)
     parser.add_argument('--workload', required=True, type=Path)
     parser.add_argument('--state', required=True, type=Path)
+    parser.add_argument('--adopt-state', type=Path, help='frozen legacy pool state transferred by the launcher')
+    parser.add_argument('--pool-root', type=Path, help='launcher-owned generations sharing transports and a boot lock')
     parser.add_argument('--repo', type=Path, default=HERE.parents[1])
     parser.add_argument('--broker', required=True)
     parser.add_argument('--debugfs', type=Path, default=Path('/opt/homebrew/opt/e2fsprogs/sbin/debugfs'),
@@ -490,12 +532,18 @@ def main():
             or max(args.replace_after, args.seconds-args.replace_after) + args.readiness_timeout >= args.seconds-args.drain_seconds):
         parser.error('two-slot replacement must attest before admission closes, lifetime <=3600s')
     args.runner, args.workload, args.state, args.repo = [p.resolve() for p in (args.runner, args.workload, args.state, args.repo)]
-    measured = json.loads(json.loads((args.workload/'compose-manifest.json').read_bytes())['docker_compose_file'])['services']['node']
+    manifest = validate_config(args.runner, args.workload, operator_config(args.operator, hardware()))
+    measured = json.loads(manifest['docker_compose_file'])['services']['node']
     if int(measured['command'][2]) != args.seconds or int(measured['environment']['ADMIT_SECONDS']) != args.seconds-args.drain_seconds:
         parser.error('pool lifetime and admission must match measured compose')
     if not args.debugfs.is_file() or not os.access(args.debugfs, os.X_OK):
         parser.error('--debugfs must name an executable result extractor')
     pool = Pool(args)
+    if args.adopt_state:
+        from pool_handoff import inherited_guests
+        pool.active = inherited_guests(args.adopt_state)
+        pool.launched = len(pool.active)
+        (args.state/'adopted.json').write_text(json.dumps(dict(drivers=[n['process'].pid for n in pool.active])))
     signal.signal(signal.SIGTERM, lambda *_: setattr(pool, 'stopping', True))
     signal.signal(signal.SIGINT, lambda *_: setattr(pool, 'stopping', True))
     pool.run()
