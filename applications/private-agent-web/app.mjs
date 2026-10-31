@@ -5,6 +5,7 @@ import { SessionListDialog } from "@pi-components/dialogs/SessionListDialog.js";
 import { PersistentStorageDialog } from "@pi-components/dialogs/PersistentStorageDialog.js";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createArtifacts, ARTIFACT_PROMPT } from "./artifacts.mjs";
+import { ArtifactGuests } from "./artifact-guests.mjs";
 import { ArtifactState } from "./artifact-state.mjs";
 import { ArtifactModels } from "./artifact-models.mjs";
 import { createSessionPersistence } from "./artifact-persistence.mjs";
@@ -32,7 +33,7 @@ import { fetchDirectAttestation } from "./direct-attestation.mjs";
 import { piToolCatalog, defaultAgentEnvironment, buildAgentPrompt } from "./pi-prompt.mjs";
 const $ = (id) => document.getElementById(id),
   decode = new TextDecoder(),
-  guests = new Map();
+  guests = new Map(), artifactGuests = new Map();
 let keys, sync, continuity, cfg, sharedLink, sharedBundle, activeArtifactView,
   credit,
   quote,
@@ -276,6 +277,14 @@ async function usage() {
   }
 }
 function renderEvidence(e) {
+  if (e.type === "guest-run") {
+    const item = document.createElement("div"); item.className = "evidence-item";
+    const label = document.createElement("p"); label.className = "badge";
+    label.textContent = e.result ? "App command · Browser-verified guest connection · Authenticated MCP output"
+      : "App guest claim · No command output received";
+    if (!e.result) { const status = document.createElement("p"); status.textContent = [e.state, e.error].filter(Boolean).join(" · "); item.append(status); }
+    item.append(label); details(item, "Guest registration, command output and final metered status", e); $("attestations").append(item); return;
+  }
   const item = document.createElement("div");
   item.className = "evidence-item";
   const p = document.createElement("p");
@@ -391,6 +400,88 @@ async function renderPersistence() {
   $("storage-status").textContent = persisted
     ? "Persistent storage enabled" : "Standard browser storage";
 }
+const guestIndexKey = wallet => `artifact-guest-pending:${wallet.toLowerCase()}`;
+let guestCard;
+function taskCard() {
+  if (guestCard) return guestCard;
+  guestCard = document.createElement("section"); guestCard.id = "artifact-guest-card"; guestCard.hidden = true;
+  const title = document.createElement("h3"); title.textContent = "Run app command in a fresh guest";
+  guestCard.append(title);
+  for (const [tag, attribute] of [["p","guest-filename"],["p","guest-wallet"],["p","guest-credit"],["p","guest-timeout"],["pre","guest-command"],["p","guest-status"]]) {
+    const element = document.createElement(tag); element.dataset[attribute.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = ""; guestCard.append(element);
+  }
+  for (const [attribute, label] of [["guest-confirm","Run command"],["guest-cancel","Cancel"],["guest-release","Finish releasing task guest"]]) {
+    const button = document.createElement("button"); button.dataset[attribute.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = ""; button.textContent = label; guestCard.append(button);
+  }
+  $("artifacts-host").before(guestCard); return guestCard;
+}
+function showTask(record, service) {
+  const card = taskCard(); card.hidden = false;
+  card.dataset.state = record.state; card.dataset.sessionId = record.sessionId || "";
+  card.dataset.active = String(record.status?.active ?? !!record.sessionId);
+  card.dataset.usageUnresolved = String(!!record.status?.usageUnresolved);
+  card.querySelector("[data-guest-filename]").textContent = record.filename;
+  card.querySelector("[data-guest-wallet]").textContent = "Viewer wallet: " + record.wallet;
+  card.querySelector("[data-guest-command]").textContent = record.command;
+  card.querySelector("[data-guest-timeout]").textContent = `Command timeout: ${record.timeoutSeconds} seconds. Guest time is charged separately from the app model budget.`;
+  card.querySelector("[data-guest-status]").textContent = record.state === "released" ? "Task guest released; final metering received." + (record.error ? " " + record.error : "") : record.error || record.state;
+  const release = card.querySelector("[data-guest-release]"); release.hidden = record.state !== "release-pending";
+  release.onclick = async () => { release.disabled = true; try { await service.finish(record); await usage(); render(); } catch (e) { error(e); } finally { release.disabled = false; } };
+  card.querySelector("[data-guest-confirm]").hidden = record.state !== "confirming";
+  card.querySelector("[data-guest-cancel]").hidden = ["released","release-pending","cancelled"].includes(record.state);
+  card.querySelector("[data-guest-cancel]").onclick = () => service.dispose();
+}
+async function appArtifactGuests(session, state) {
+  if (artifactGuests.has(session.id)) return artifactGuests.get(session.id);
+  const taskScope = JSON.stringify(["host-guest-tasks", session.id]);
+  const initial = Object.values((await state.read(taskScope)).tasks || {});
+  let service;
+  service = new ArtifactGuests({ credit, api, authorize: walletBody, initial,
+    mainHeld: () => [...guests.values()].some(value => value.lease || value.opening || value.savedLease?.active) ||
+      [...artifactGuests.values()].some(value => value !== service && value.busy),
+    createSession: options => new GuestSession({ ...options, cfg, discover, catalog: piToolCatalog }),
+    confirm: (record, signal) => new Promise(resolve => {
+      showTask(record, service);
+      const card = taskCard(), approve = card.querySelector("[data-guest-confirm]"), cancel = card.querySelector("[data-guest-cancel]");
+      card.querySelector("[data-guest-credit]").textContent = "Available viewer credit: " + formatNanoUsd(record.credit);
+      card.scrollIntoView({ block: "nearest" });
+      const finish = approved => { signal.removeEventListener("abort", aborted); approve.onclick = cancel.onclick = null; resolve(approved); };
+      const aborted = () => finish(false);
+      approve.onclick = () => finish(true); cancel.onclick = () => finish(false);
+      if (signal.aborted) aborted(); else signal.addEventListener("abort", aborted, { once: true });
+    }),
+    persist: async record => {
+      await state.update(taskScope, data => { (data.tasks ||= {})[record.id] = record; });
+      const key = guestIndexKey(record.wallet), entries = (await store(key) || []).filter(entry => entry.id !== record.id);
+      if (record.sessionId && record.state !== "released") entries.push({ ownerSessionId: session.id, id: record.id, scope: record.scope, conversationId: record.conversationId, sessionId: record.sessionId, wallet: record.wallet });
+      await store(key, entries);
+    },
+    evidence: async evidence => { if (currentSession.id === session.id) renderEvidence(evidence); },
+    changed: record => { showTask(record, service); if (record.state === "released") usage().then(render).catch(error); },
+  });
+  artifactGuests.set(session.id, service);
+  return service;
+}
+async function recoverArtifactGuests() {
+  const entries = await store(guestIndexKey(credit.address)) || [];
+  for (const entry of entries) {
+    if (artifactGuests.has(entry.ownerSessionId)) {
+      const service = artifactGuests.get(entry.ownerSessionId), record = service.records.get(entry.id);
+      if (record) showTask(record, service);
+      continue;
+    }
+    const saved = await storage.sessions.get(entry.ownerSessionId);
+    if (!saved) { error(Error("The owned task record is unavailable; recover its original chat before releasing it.")); continue; }
+    const snapshot = { state: { messages: saved.messages, model: saved.model, thinkingLevel: saved.thinkingLevel } };
+    const state = new ArtifactState({ dataKey: keys.bundle.dk,
+      getRecord: async scope => (await storage.sessions.get(saved.id))?.dsmack?.artifactState?.[scope],
+      saveRecord: async (scope, envelope) => { await persistSession(saved, snapshot, {scope,envelope}); try { await sync.push(saved.id); } catch(e) { error(e); } },
+    });
+    const service = await appArtifactGuests(saved, state), record = service.records.get(entry.id);
+    if (record) showTask(record, service);
+  }
+}
+addEventListener("pagehide", () => { for (const service of artifactGuests.values()) service.dispose(); });
 async function useSession(data) {
   if (agent) await agent.waitForIdle();
   await lastSave;
@@ -451,6 +542,7 @@ async function useSession(data) {
   renderGuest(guest.statusSnapshot || { state: "idle" });
   renderWorkspace(guest.workspaceStatus || { head: sessionRecord.dsmack.workspace });
   let artifacts, artifactAgent;
+  activeArtifactView?.dispose?.();
   activeArtifactView = undefined;
   const artifactHost = $("artifacts-host");
   artifactHost.replaceChildren();
@@ -481,7 +573,8 @@ async function useSession(data) {
       },
       changed: scope => artifacts?.refreshBudget(scope).catch(error),
     });
-    artifacts = createArtifacts(undefined, { state: artifactState, models: artifactModels, credit,
+    const taskGuests = await appArtifactGuests(artifactSession, artifactState);
+    artifacts = createArtifacts(undefined, { state: artifactState, models: artifactModels, guests: taskGuests, credit,
       scopeForFilename: filename => filename === "shared.html" && artifactSession.dsmack.sharedArtifactCid
         ? sharedScope(artifactSession.dsmack.sharedArtifactCid) : JSON.stringify([artifactSession.id, filename]), error,
       share: async html => {
@@ -534,6 +627,7 @@ async function useSession(data) {
     if (imported.length) { artifactHost.hidden = false; artifacts.panel.openArtifact("shared.html"); }
   }
   guest.record = { session: currentSession, agent };
+  if (keys.bundle && credit.signer) await recoverArtifactGuests();
   if (credit.signer) {
     try { await guest.restore(); }
     catch (e) { renderGuest({ state: guest.lease ? "disconnected-held" : "error", error: e.message }); }
@@ -541,6 +635,7 @@ async function useSession(data) {
   setModel();
   $("attestations").replaceChildren();
   for (const e of currentSession.dsmack.evidence) renderEvidence(e);
+  for (const record of artifactGuests.get(currentSession.id)?.records.values() || []) if (record.sessionId) renderEvidence({ ...record, type: "guest-run" });
   chat.session = agent;
   chat.dataset.sessionId = currentSession.id;
   if (!chat.isConnected) $("chat-host").append(chat);

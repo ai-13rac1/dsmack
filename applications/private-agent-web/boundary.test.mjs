@@ -250,6 +250,14 @@ try {
     await page.waitForFunction(()=>Array.from(document.querySelectorAll("iframe")).length>0);
     let app = await sharedAppFrame(page);
     assert(app,"shared HTML opens without a model request");
+    await app.evaluate(() => { window.guestCancelled = dsmack.guest.run({command:"printf boundary-only",timeoutSeconds:1}).then(() => "unexpected", error => error.code); });
+    await page.locator("#artifact-guest-card [data-guest-confirm]").waitFor({state:"visible"});
+    assert.equal(await page.locator("[data-guest-command]").textContent(), "printf boundary-only");
+    assert((await page.locator("[data-guest-wallet]").textContent()).toLowerCase().includes((await page.locator("#wallet").textContent()).toLowerCase()));
+    await page.locator("[data-guest-cancel]").click();
+    assert.equal(await app.evaluate(() => window.guestCancelled), "USER_CANCELLED");
+    assert(!calls.some(call => call.path === "/agent/open"), "cancelled app confirmation cannot claim a guest");
+
     await app.waitForFunction(()=>window.dsmack);
     assert.equal(await app.evaluate(()=>dsmack.storage.get("viewer-secret")),null);
     await app.evaluate(()=>dsmack.storage.put("viewer-secret","VIEWER_PRIVATE_STATE"));
