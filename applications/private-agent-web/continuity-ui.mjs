@@ -134,7 +134,7 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
     dkimPoll = poll;
     emailInstructions.hidden = true;
     $("send-recovery-email").hidden = true;
-    status("Verifying the recovery gate’s attestation…");
+    status("Checking the recovery service…");
     if (purpose === "enroll") { requireWallet(); await beforeExport(); }
     const request = await emailGate.requestDkim($("recovery-email").value, purpose);
     if (poll.signal.aborted) return;
@@ -167,7 +167,7 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
   const requestEmail = async (purpose) => {
     if (purpose === "enroll") { requireWallet(); await beforeExport(); }
     emailPurpose = purpose;
-    status("Verifying the recovery gate’s attestation…");
+    status("Checking the recovery service…");
     emailRequest = await emailGate.request($("recovery-email").value.trim(), purpose);
     status("Enter the email code sent to your address.");
   };
