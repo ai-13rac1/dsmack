@@ -53,16 +53,27 @@ class SourceGateTests(unittest.TestCase):
 
     def test_staging_package_routes_page_to_separate_broker_and_tunnels(self):
         page=load('page_deploy', ROOT/'applications/private-agent-web/deploy.py')
+        bundle=load('page_bundle', ROOT/'applications/private-agent-web/bundle.py')
         with tempfile.TemporaryDirectory() as tmp:
             dist=Path(tmp)
             (dist/'index.html').write_text('page')
-            (dist/'config.json').write_text(json.dumps(dict(broker='production', tunnels='production')))
-            public_config=dist/'staging.json'
+            (dist/'config.json').write_text(json.dumps(dict(broker='https://pod.dstack.soc1024.com/relay-broker-staging', tunnels='https://private-agent-staging.dstack.soc1024.com/tunnels', brokerKey='staged-key')))
+            public_config=dist.parent/(dist.name+'-staging.json')
+            self.addCleanup(public_config.unlink)
             public_config.write_text(json.dumps(dict(broker='production', tunnels='production', brokerKey='staged-key')))
+            data=bundle.payload(dist)
+            own=bundle.cid(data)
+            (dist/'page-bundle.tar').write_bytes(data)
+            (dist/'index.html').write_text(f'<meta name="page-bundle-cid" content="{own}">page')
             with patch.object(page.subprocess, 'check_output', return_value=b'export default () => new Response("page");'):
                 archive=page.package(dist, 'staging', public_config)
             with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as package:
                 config=json.load(package.extractfile('dist/config.json'))
+                self.assertEqual(package.extractfile('dist/page-bundle.tar').read(), data)
+                self.assertEqual(package.extractfile('dist/config.json').read(), (dist/'config.json').read_bytes())
+            public_config.write_text(json.dumps(dict(broker='production', tunnels='production', brokerKey='wrong-key')))
+            with self.assertRaisesRegex(ValueError, 'Build with PAGE_CONFIG'):
+                page.package(dist, 'staging', public_config)
             self.assertEqual(config['brokerKey'], 'staged-key')
             self.assertEqual(config['broker'], 'https://pod.dstack.soc1024.com/relay-broker-staging')
             self.assertEqual(config['tunnels'], 'https://private-agent-staging.dstack.soc1024.com/tunnels')
@@ -72,7 +83,7 @@ class SourceGateTests(unittest.TestCase):
     def test_page_refuses_before_packaging_or_reading_credentials(self):
         page=load('page_deploy_gate', ROOT/'applications/private-agent-web/deploy.py')
         with patch('sys.argv', ['deploy.py', '--target', 'production', '--evidence', 'unused',
-                                '--smtp-env', 'unused', '--operator-token-sha256', 'a'*64]), \
+                                '--page-env', 'unused', '--registry-account', 'fixture', '--operator-token-sha256', 'a'*64]), \
              patch.object(page, 'source_ref', side_effect=ValueError('clean tree required')), \
              patch.object(page, 'token') as token, patch.object(page, 'package') as package:
             with self.assertRaisesRegex(ValueError, 'clean tree'):

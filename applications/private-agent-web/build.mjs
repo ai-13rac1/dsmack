@@ -30,9 +30,13 @@ await build({
   define: { "process.env.NODE_ENV": '"production"' },
   logLevel: "info",
 });
-for (const name of ["style.css", "config.json"]) {
-  await copyFile(resolve(app, name), resolve(app, "dist", name));
+await copyFile(resolve(app, "style.css"), resolve(app, "dist/style.css"));
+const config = JSON.parse(await readFile(process.env.PAGE_CONFIG || resolve(app, "config.json"), "utf8"));
+if (process.env.PAGE_TARGET === "staging") {
+  config.broker = "https://pod.dstack.soc1024.com/relay-broker-staging";
+  config.tunnels = "https://private-agent-staging.dstack.soc1024.com/tunnels";
 }
+await writeFile(resolve(app, "dist/config.json"), JSON.stringify(config));
 await copyFile(resolve(pi, "app.css"), resolve(app, "dist/pi.css"));
 let html = await readFile(resolve(app, "index.html"), "utf8");
 for (const name of ["app.js", "wallet-bootstrap.js", "style.css", "pi.css"]) {

@@ -65,7 +65,7 @@ def inherited_guests(state):
         slot = by_peer[attempt['relay_peer']]
         path = Path(attempt['run'])
         pid = attempt['driver_pid']
-        command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
+        command = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'command='], text=True)
         if str(path) not in shlex.split(command) or 'pool_mac_run.py' not in command:
             raise RuntimeError('legacy driver identity differs from its launch record')
         manifest = json.loads((path/'compose-manifest.json').read_bytes())
@@ -81,7 +81,7 @@ def inherited_guests(state):
 
 class LegacyHandoff:
     def __init__(self, pid, state):
-        command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
+        command = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'command='], text=True)
         words = shlex.split(command)
         if 'mac-pool.py' not in command or '--state' not in words or Path(words[words.index('--state')+1]).resolve() != state.resolve():
             raise ValueError('--adopt-launcher must own the supplied --state')
@@ -91,7 +91,7 @@ class LegacyHandoff:
         self.transports = []
         try:
             self.launcher.freeze()
-            rows = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,pgid=,command='], text=True)
+            rows = subprocess.check_output(['ps', '-ww', '-axo', 'pid=,ppid=,pgid=,command='], text=True)
             for row in rows.splitlines():
                 child, parent, group, command = row.strip().split(None, 3)
                 if int(parent) != pid:

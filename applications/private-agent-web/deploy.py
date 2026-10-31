@@ -18,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 APP = Path(__file__).resolve().parent
 PROJECT = "private-agent"
+sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP.parents[1] / "tools"))
 from deploy_idle import wait_for_idle
 from deploy_target import WEBHOST, STAGING_HOST, project_name, source_ref
@@ -55,6 +56,9 @@ def package(dist, target="production", config_path=None):
     if target == "staging":
         config["broker"] = WEBHOST + "/relay-broker-staging"
         config["tunnels"] = STAGING_HOST + "/tunnels"
+    if config != json.loads((dist / "config.json").read_bytes()):
+        raise ValueError("Build with PAGE_CONFIG and PAGE_TARGET before packaging target config")
+    check_bundle(dist)
     if not (dist / "index.html").is_file():
         raise ValueError("Build the page first: dist/index.html is missing")
     data = io.BytesIO()
@@ -70,12 +74,7 @@ def package(dist, target="production", config_path=None):
             if path.is_file():
                 if any(part.startswith(".") for part in relative.parts) or path.suffix in (".key", ".pem"):
                     raise ValueError("Built assets contain a private filename")
-                if relative.as_posix() == "config.json":
-                    body = json.dumps(config).encode()
-                    info = tarfile.TarInfo("dist/config.json"); info.size = len(body)
-                    archive.addfile(info, io.BytesIO(body))
-                else:
-                    archive.add(path, arcname="dist/" + relative.as_posix(), recursive=False)
+                archive.add(path, arcname="dist/" + relative.as_posix(), recursive=False)
     return data.getvalue()
 
 

@@ -78,6 +78,7 @@ try {
  const wallet=await page.locator("#wallet").textContent();
  await (await owner.sendTransaction({to:wallet,value:10n**18n})).wait();
  await (await token.mint(wallet,1000000)).wait();
+ await page.locator("#advanced > summary").click();
  await page.getByText("Prepaid USDC",{exact:true}).click();
  await page.locator("#deposit-amount").fill("1");
  await page.locator("#deposit").click();
