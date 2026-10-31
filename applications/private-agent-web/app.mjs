@@ -24,7 +24,7 @@ import {
   walletBody,
 } from "./credit.mjs";
 import { brokerStream, PRIVACY } from "./inference.mjs";
-import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply } from "./reply-recovery.mjs";
+import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
 import { GuestSession, createGuestPeer } from "./agent-tools.mjs";
@@ -277,24 +277,9 @@ async function usage() {
   }
 }
 function renderEvidence(e) {
-  if (e.type === "guest-run") {
-    const item = document.createElement("div"); item.className = "evidence-item";
-    const label = document.createElement("p"); label.className = "badge";
-    label.textContent = e.result ? "App command · Browser-verified guest connection · Authenticated MCP output"
-      : "App guest claim · No command output received";
-    if (!e.result) { const status = document.createElement("p"); status.textContent = [e.state, e.error].filter(Boolean).join(" · "); item.append(status); }
-    item.append(label); details(item, "Guest registration, command output and final metered status", e); $("attestations").append(item); return;
-  }
-  const item = document.createElement("div");
-  item.className = "evidence-item";
-  const p = document.createElement("p");
-  p.className = "badge";
-  p.textContent = `Answer ${
-    $("attestations").querySelectorAll(".evidence-item").length + 1
-  } · Broker verified quote · Browser checked nonce and encryption key`;
-  item.append(p);
-  details(item, "Model, nonce, signing addresses & TLS evidence", e);
-  $("attestations").append(item);
+  if (e.type !== "guest-run") $("verified").hidden = false;
+  $("attestations").replaceChildren();
+  details($("attestations"), "Latest verification details", e);
 }
 function setModel() {
   if (!agent) return;
@@ -354,6 +339,7 @@ async function addEvidence(e) {
 }
 function setChatBusy(busy) {
   chatBusy = busy;
+  if (!busy) $("capacity-status").textContent = "";
   $("new-chat").disabled = busy;
   $("sessions").disabled = busy;
   renderReplyRecovery();
@@ -626,6 +612,7 @@ async function useSession(data) {
     $("open-artifacts").hidden = !artifacts.panel.artifacts.size;
     if (imported.length) { artifactHost.hidden = false; artifacts.panel.openArtifact("shared.html"); }
   }
+  failOrphanedTools(agent.state.messages, "Guest connection ended before a tool result was received. Execution was not retried.");
   guest.record = { session: currentSession, agent };
   if (keys.bundle && credit.signer) await recoverArtifactGuests();
   if (credit.signer) {
@@ -634,14 +621,16 @@ async function useSession(data) {
   }
   setModel();
   $("attestations").replaceChildren();
+  $("verified").hidden = true;
   for (const e of currentSession.dsmack.evidence) renderEvidence(e);
   for (const record of artifactGuests.get(currentSession.id)?.records.values() || []) if (record.sessionId) renderEvidence({ ...record, type: "guest-run" });
   chat.session = agent;
   chat.dataset.sessionId = currentSession.id;
   if (!chat.isConnected) $("chat-host").append(chat);
   await chat.updateComplete;
+  chat.querySelector("message-editor").prepend($("code-attachment"));
   let firstPartial = true;
-  unsubscribeChat = agent.subscribe((event) => {
+  unsubscribeChat = agent.subscribe((event, signal) => {
     renderToolProgress(chat, agent, event);
     if (event.type === "message_start") firstPartial = true;
     if (firstPartial && event.type === "message_update" && event.message.role === "assistant" &&
@@ -660,7 +649,15 @@ async function useSession(data) {
       chat.requestUpdate();
       renderReplyRecovery();
     }
-    if (event.type === "message_end" || event.type === "agent_end") return saveCurrentChat(event.type === "agent_end");
+    if (event.type === "agent_end") {
+      failOrphanedTools(agent.state.messages, signal.aborted
+        ? "Cancelled before a tool result was received. Execution was not retried."
+        : "Guest connection ended before a tool result was received. Execution was not retried.");
+      agent.state.messages = [...agent.state.messages];
+    }
+    // Core 1.4 awaits listeners before becoming idle. Remote sync must not
+    // hold the composer busy, including after cancellation during an outage.
+    if (event.type === "message_end" || event.type === "agent_end") saveCurrentChat(event.type === "agent_end").catch(error);
   });
   await saveCurrentChat();
   await storage.settings.set("chat.active", currentSession.id);
@@ -685,6 +682,14 @@ async function initChat() {
   if (keys.bundle) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
   chat = new AgentInterface();
   chat.id = "chat";
+  // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
+  chat.updated = () => {
+    const editor = chat.querySelector("message-editor");
+    if (editor) editor.updateComplete.then(() => {
+      const button = editor.querySelector("button:last-child");
+      button?.setAttribute("aria-label", chat.session.state.isStreaming ? "Cancel reply" : "Send message");
+    });
+  };
   chat.enableAttachments = false;
   chat.enableModelSelector = false;
   chat.enableThinkingSelector = false;
@@ -792,8 +797,7 @@ function showDirectory(path, brokerFailure, chainFailure) {
     $("node-status").before(label);
   }
   label.dataset.path = path;
-  label.textContent = `Directory: ${path}` + (brokerFailure ? ` · ${brokerFailure}` : "") +
-    (chainFailure ? ` · Chain directory failed: ${chainFailure}` : "");
+  label.textContent = [brokerFailure, chainFailure ? `Chain directory failed: ${chainFailure}` : ""].filter(Boolean).join(" · ");
 }
 function directoryFailure(e) {
   return "Broker guest directory unavailable" + (e.status ? ` (HTTP ${e.status})` : "") +
@@ -839,11 +843,16 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
     } catch (e) {
       mark("discovery:end", { error: e.code || e.message });
       if (signal?.aborted) throw e;
-      if (e.code === "FLEET_BUSY") {
+      if (["FLEET_BUSY", "FLEET_EMPTY"].includes(e.code)) {
         const retry = Math.max(1, Math.min(60, Number(e.retryAfterSeconds) || 15));
         showDirectory("broker");
-        $("node-status").textContent = `Busy, retry in ${retry} seconds.`;
-        if (!wait || Date.now() + retry * 1000 > deadline) throw e;
+        // Older brokers use FLEET_BUSY even with zero live registrations.
+        const live = await api("/nodes?all=1", undefined, { signal });
+        const empty = !live.some(node => node.kind === "compute");
+        const message = empty ? `No Macs are connected right now; retrying in ${retry} s`
+          : `No Mac is free right now; retrying in ${retry} s`;
+        $("capacity-status").textContent = message;
+        if (!wait || Date.now() + retry * 1000 > deadline) throw new Error(empty ? "No Macs are connected right now. Try again shortly." : "No Mac is free right now. Try again shortly.");
         await pause(retry * 1000);
         continue;
       }
@@ -858,6 +867,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
       }
     }
     mark("discovery:end", { candidates: nodes.length });
+    $("capacity-status").textContent = "";
     // Keep the broker's order. Placement hints never replace these local pins.
     const candidates = nodes.filter(entry => entry.kind === "compute" &&
       entry.available !== false && !exclude.has(entry.relay_peer) &&
@@ -939,8 +949,8 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
     if (lastRefusal) throw lastRefusal;
     if (chainDirectory) throw new Error(`${brokerFailure} Directory: chain. No live approved guest was found on chain.`);
     require(wait && Date.now() + 2000 <= deadline,
-      "No approved guest is available right now. Please try again shortly.");
-    $("node-status").textContent = "Waiting for an approved guest; retry in 2 seconds…";
+      nodes.length ? "No Mac is free right now. Try again shortly." : "No Macs are connected right now. Try again shortly.");
+    $("capacity-status").textContent = nodes.length ? "No Mac is free right now; retrying in 2 s" : "No Macs are connected right now; retrying in 2 s";
     await pause(2000);
   }
 }
@@ -964,7 +974,6 @@ function renderGuest(status) {
   $("download").disabled = status.state !== "held";
   $("save-workspace").disabled = status.state !== "held";
   $("repo").disabled = held;
-  $("sample").disabled = held;
   $("guest-seconds").textContent = `${status.guestSeconds || 0} guest seconds`;
   $("guest-status").dataset.state = status.state;
   $("guest-status").textContent = status.error || ({
@@ -996,9 +1005,9 @@ function renderWorkspace(status) {
   $("workspace-status").dataset.version = String(status.head?.version || 0);
   $("workspace-status").dataset.state = status.state || "ready";
 }
-function resetSample() {
-  repoFiles = new Map([["greet.txt", "Hello world.\n"]]);
-  $("repository-status").textContent = "Included repository: greet.txt. Ask for changes in chat, then download the workspace patch.";
+function emptyRepository() {
+  repoFiles = new Map();
+  $("repository-status").textContent = "Attach a .tar or .tar.gz of UTF-8 files before the first tool call.";
 }
 async function readRepository(file) {
   require(file?.size <= 16 * 1024 * 1024, "Repository exceeds the 16 MiB input limit.");
@@ -1152,6 +1161,7 @@ async function main() {
   });
   action("reconcile", () => usage());
   action("refund", refund);
+  action("verified", async () => { $("advanced").open = true; $("attestations").scrollIntoView({ block: "nearest" }); });
   action("discover", async () => {
     const peer = await createGuestPeer();
     try { await discover({ peer }); }
@@ -1159,7 +1169,6 @@ async function main() {
   });
   action("end-session", () => guest.end());
   action("save-workspace", () => guest.save());
-  action("sample", resetSample);
   action("download", async () => {
     const patch = await guest.patch();
     const url = URL.createObjectURL(new Blob([patch], { type: "text/x-diff" })),
@@ -1183,12 +1192,12 @@ async function main() {
       repoFiles = await readRepository(event.target.files[0]);
       $("repository-status").textContent = `${repoFiles.size} repository files selected. Ask for a change in chat.`;
     } catch (e) {
-      resetSample();
+      emptyRepository();
       error(e);
     }
   };
   loadPolicy(cfg.sandboxPolicy);
-  resetSample();
+  emptyRepository();
   document.documentElement.dataset.ready = "true";
   // Network verification follows local rendering and never gates the wallet.
   refreshServices().catch(error);

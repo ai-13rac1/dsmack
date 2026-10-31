@@ -50,9 +50,9 @@ The bundle contains code only. Each viewer chooses their own wallet and uses
 their own encrypted storage and model credit. Apps can call `dsmack.guest.run({command,timeoutSeconds:60})` for one fresh empty guest, after an exact-command confirmation in the host card. Each command releases its guest; files belong to that call. The card can finish releasing an interrupted task after reload. Reloading a link preserves that
 viewer's state and the budget bound to the ciphertext CID.
 
-The included repository contains `greet.txt`. Ask for an edit in chat and choose
-Download patch for the workspace diff. Before the first tool call, Choose
-repository accepts a tar or gzipped tar of UTF-8 files, without `.git`. Repository
+Attach your code in the composer accepts a tar or gzipped tar of UTF-8 files,
+without `.git`, before the first tool call. Download changes beside the
+conversation exports the workspace diff. The workspace starts empty. Repository
 content is marked untrusted in the prompt. The guest workspace persists until
 release. The wallet and conversations persist in IndexedDB. At
 https://private-agent.dstack.soc1024.com, Use on another device offers passkey
@@ -130,6 +130,15 @@ BASE_URL=http://127.0.0.1:18731/private-agent/ \
 CHROMIUM_PATH=/absolute/path/to/chromium \
 EVIDENCE=/absolute/path/to/local-data/ui npm run test:browser
 ```
+
+Run the chat recovery and capacity flows against a local mocked broker (requires
+Chromium and `openssl`):
+
+```sh
+EVIDENCE=/absolute/path/to/local-data/ux npm run test:ux
+```
+
+The test starts its own local HTTPS server and captures phone and desktop views.
 
 Run the generated-app boundary checks with Node 24 and an existing browser:
 
