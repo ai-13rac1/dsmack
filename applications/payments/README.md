@@ -10,7 +10,10 @@ secp256k1 address once with `registerBroker`, then registers classes with
 Buy and obtain the broker’s finalized purchase confirmation before starting the VM. All chain reads use matching replies from two of
 three independent RPCs at one common finalized block hash, with pinned code
 and a 30-minute staleness limit. After finality, launch the node, verify its
-Apple assertion and obtain the broker's signed run binding. Execute within the
+Apple assertion and obtain the broker's signed run binding.
+Node report data uses [dsmack.bind/1](../../docs/protocol.md#one-report_data-binding);
+`receiptPublicKey` is the compressed secp256k1 public key matching `receiptSigner`,
+bound alongside the agent receipt key and the fresh admission challenge. Execute within the
 runner's 900-second watchdog, retain the final receipt, stop the VM and then
 settle. Neither admission nor grant activation requires an on-chain transaction.
 

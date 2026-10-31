@@ -1,3 +1,4 @@
+import { reportData } from "../../../dstack-compat/binding.mjs";
 import {
   cat,
   checkAssertion,
@@ -9,7 +10,7 @@ import {
 } from "../../../dstack-compat/secret-release/policy.mjs";
 import { bytesEqual, decodeCbor, require } from "./encoding.mjs";
 import { APP_ID, verifyEnrollment } from "./enrollment.mjs";
-import { paymentBinding, paymentRunId } from "./payments.mjs";
+import { paidReceiptKey, paymentRunId } from "./payments.mjs";
 export { hex, unhex };
 const enc = new TextEncoder(),
   dec = new TextDecoder("utf-8", { fatal: true }),
@@ -244,12 +245,7 @@ export async function verifyNode(registration, policy) {
     resolved,
     enrollment,
   );
-  let expected = cat(
-    await sha256(
-      cat(enc.encode("dsmack-compute-node/1"), peer, secret, receipt),
-    ),
-    new Uint8Array(32),
-  );
+  let receiptKeys = receipt, challenge = new Uint8Array(32);
   if (registration.payments) {
     const p = registration.payments;
     require(
@@ -274,18 +270,10 @@ export async function verifyNode(registration, policy) {
       p.buildId.toLowerCase() === "0x" + hex(await chain.buildId()),
       "payment build",
     );
-    expected = cat(
-      unhex(
-        paymentBinding(
-          p,
-          registration.relay_peer,
-          resolved.manifestHash,
-          resolved.image,
-        ).slice(2),
-      ),
-      await sha256(cat(expected, unhex(p.challenge))),
-    );
+    receiptKeys = cat(receipt, paidReceiptKey(p));
+    challenge = unhex(p.challenge);
   }
+  const expected = await reportData(peer, secret, receiptKeys, challenge);
   require(eq(a.report_data, expected), "node PeerId/secret/receipt binding");
   return {
     registration,

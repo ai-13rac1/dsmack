@@ -3,7 +3,6 @@ package payments
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -98,11 +97,12 @@ type Config struct {
 }
 type Registration struct {
 	Config
-	RunExpires    int64  `json:"runExpires"`
-	RunID         string `json:"runId"`
-	RunNonce      string `json:"runNonce"`
-	ReceiptSigner string `json:"receiptSigner"`
-	Challenge     string `json:"challenge"`
+	RunExpires       int64  `json:"runExpires"`
+	RunID            string `json:"runId"`
+	RunNonce         string `json:"runNonce"`
+	ReceiptSigner    string `json:"receiptSigner"`
+	ReceiptPublicKey string `json:"receiptPublicKey"`
+	Challenge        string `json:"challenge"`
 }
 type Meter struct {
 	Registration
@@ -135,37 +135,10 @@ func New(cfg Config) (*Meter, error) {
 		return nil, e
 	}
 	kid, _ := raw(cfg.EnrollmentKeyID, 32)
-	return &Meter{Registration: Registration{Config: cfg, RunExpires: time.Now().Unix() + cfg.RunSeconds, RunID: hexed(hash(join(kid, nonce))), RunNonce: hexed(nonce), ReceiptSigner: address(key.PubKey())}, key: key, sequences: map[string]int64{}, closed: map[string]bool{}}, nil
+	return &Meter{Registration: Registration{Config: cfg, RunExpires: time.Now().Unix() + cfg.RunSeconds, RunID: hexed(hash(join(kid, nonce))), RunNonce: hexed(nonce), ReceiptSigner: address(key.PubKey()), ReceiptPublicKey: hexed(key.PubKey().SerializeCompressed())}, key: key, sequences: map[string]int64{}, closed: map[string]bool{}}, nil
 }
-func (m *Meter) Binding(peer, compose, image string) ([]byte, error) {
-	escrow, _ := raw(m.Escrow, 20)
-	node, _ := raw(m.Node, 32)
-	run, _ := raw(m.RunID, 32)
-	operator, _ := raw(m.Operator, 20)
-	signer, _ := raw(m.ReceiptSigner, 20)
-	build, _ := raw(m.BuildID, 32)
-	c, e := raw(compose, 32)
-	if e != nil {
-		return nil, e
-	}
-	i, e := raw(image, 32)
-	if e != nil {
-		return nil, e
-	}
-	p := sha256.Sum256([]byte(peer))
-	return hash(join(hash([]byte("DsmackPaymentsNodeV2")), uintWord(84532), padded(escrow), node, run, padded(operator), padded(signer), p[:], c, i, build, uintWord(m.RunExpires))), nil
-}
-func (m *Meter) Report(peer, compose, image string, legacy []byte, challenge string) ([]byte, error) {
-	b, e := m.Binding(peer, compose, image)
-	if e != nil {
-		return nil, e
-	}
-	c, e := raw(challenge, 32)
-	if e != nil {
-		return nil, e
-	}
-	h := sha256.Sum256(join(legacy, c))
-	return join(b, h[:]), nil
+func (m *Meter) ReceiptPublicKey() []byte {
+	return m.key.PubKey().SerializeCompressed()
 }
 
 type Grant struct {

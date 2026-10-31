@@ -12,6 +12,8 @@ The official TypeScript MCP SDK uses its current split packages
 `@modelcontextprotocol/server` and `@modelcontextprotocol/client` **2.4.0**,
 which implement MCP **2026-07-28**.
 
+See the [layered protocol](../../docs/protocol.md) for binding and wire contracts.
+
 ## Transport and workspace
 
 `/dsmack/agent-mcp/1.0.0` authenticates the existing broker-signed admission

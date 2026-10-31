@@ -151,7 +151,7 @@ Links, revocations and heartbeat records persist atomically in `fleet.json`.
 The CLI is documented under [Add a Mac](../mac-ownership/README.md#add-a-mac).
 
 
-See [the compute protocol](../compute-node/PROTOCOL.md) for admission and wire
+See [the compute protocol](../../docs/protocol.md) for admission and wire
 formats. `verify-grant.py` independently verifies an HTTP grant with Python
 `cryptography`.
 
