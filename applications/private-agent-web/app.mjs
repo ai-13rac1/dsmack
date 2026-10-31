@@ -28,6 +28,7 @@ import { brokerStream, PRIVACY } from "./inference.mjs";
 import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
+import { monitorLabel } from "../egress-policy/monitor/registry.mjs";
 import { GuestSession, createGuestPeer } from "./agent-tools.mjs";
 import { discoverChainNodes } from "./chain-directory.mjs";
 import { fetchDirectAttestation } from "./direct-attestation.mjs";
@@ -548,6 +549,7 @@ async function useSession(data) {
     getApiKey: () => undefined,
     streamFn: brokerStream({
       credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error,
+      preflight: (context, signal) => guest.preflight(context, signal, policy.manifest),
       startedAt: currentSession.createdAt,
       systemPrompt: ({ checked, runtime }) => buildAgentPrompt({
         runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. Model calls remain encrypted from the browser to the NEAR model TEE.\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
@@ -885,7 +887,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
         node = checked;
         $("node-status").textContent = "Node verified · Apple enrollment (" +
           (checked.enrollmentMode || checked.policy.enrollmentMode || "on-chain") +
-          "), approved build, compose, image, broker and bound keys";
+          "), approved build, compose, image, broker and bound keys · " + monitorLabel(checked.policy.monitor);
         $("node-evidence").textContent = JSON.stringify(registration, null, 2);
         return checked;
       } catch (e) {

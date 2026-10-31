@@ -114,8 +114,14 @@ export class GuestSession {
       parameters: tool.inputSchema,
       execute: async (_id, args, signal, onUpdate) => {
         const client = await this.ensure(signal, tool.name === "bash" ? Number(args.timeout || this.environment?.commandTimeoutSeconds || 120) : 5);
+        // A handover can select a fresh guest after the model request began.
+        if (this.firstPrompt !== undefined && this.node.policy.monitor?.name === "baseline-pg2") await this.checkPreflight(client, signal);
         performance.mark("dsmack:tool:start", { detail: tool.name });
-        const result = await client.callTool({ name: tool.name, arguments: args }, {
+        const messages = this.record?.agent.state.messages || [];
+        const assistant = messages.findLast(message => message.role === "assistant");
+        const result = await client.callTool({ name: tool.name, arguments: args,
+          ...(this.node.policy.monitor?.name === "baseline-pg2" ? { _meta: { "dsmack/monitorResponse": JSON.stringify(assistant?.content) } } : {}),
+        }, {
           signal, timeout: this.environment.commandTimeoutSeconds * 1000 + 15000,
           onprogress: p => {
             if (p.message) onUpdate?.({ content: [{ type: "text", text: p.message }], details: { progress: p.progress } });
@@ -127,6 +133,18 @@ export class GuestSession {
         return { content: result.content, isError: !!result.isError, details: result._meta?.["dsmack/piDetails"] || result.structuredContent || {} };
       },
     }));
+  }
+  async preflight(context, signal, manifestBytes = this.node?.policy.manifest) {
+    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+    const environment = JSON.parse(manifest.docker_compose_file).services.node.environment;
+    if (JSON.parse(environment.DSMACK_MONITOR_POLICY || '{"name":"none"}').name !== "baseline-pg2") return;
+    const first = context.messages.find(message => message.role === "user");
+    this.firstPrompt = typeof first?.content === "string" ? first.content : first?.content?.filter(part => part.type === "text").map(part => part.text).join("\n");
+    const client = await this.ensure(signal);
+    await this.checkPreflight(client, signal);
+  }
+  async checkPreflight(client, signal) {
+    await client.callTool({ name: "dsmack_monitor", arguments: { prompt: this.firstPrompt } }, { signal, timeout: 130000 });
   }
   async restore() {
     const saved = this.savedLease;

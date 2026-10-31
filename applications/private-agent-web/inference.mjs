@@ -53,7 +53,7 @@ export function withInferenceWallet(credit, operation) {
 }
 
 export function brokerStream(
-  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt },
+  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt, preflight },
 ) {
   const conversationStarted = new Date(startedAt);
   return (model, context, options = {}) => {
@@ -110,6 +110,7 @@ export function brokerStream(
       };
       try {
         require(!options.signal?.aborted, "Inference request was aborted.");
+        await preflight?.(context, options.signal);
         const q = quote();
         require(
           q?.configured,
