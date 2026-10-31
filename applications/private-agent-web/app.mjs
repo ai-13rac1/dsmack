@@ -439,7 +439,7 @@ async function appArtifactGuests(session, state) {
   service = new ArtifactGuests({ credit, api, authorize: walletBody, initial,
     mainHeld: () => [...guests.values()].some(value => value.lease || value.opening || value.savedLease?.active) ||
       [...artifactGuests.values()].some(value => value !== service && value.busy),
-    createSession: options => new GuestSession({ ...options, cfg, discover, catalog: piToolCatalog }),
+    createSession: options => new GuestSession({ ...options, cfg, discover, reverify, catalog: piToolCatalog }),
     confirm: (record, signal) => new Promise(resolve => {
       showTask(record, service);
       const card = taskCard(), approve = card.querySelector("[data-guest-confirm]"), cancel = card.querySelector("[data-guest-cancel]");
@@ -516,7 +516,7 @@ async function useSession(data) {
       },
     });
     guest = new GuestSession({
-      api, cfg, credit, conversationId, discover, workspace, savedLease: currentSession.dsmack.guest,
+      api, cfg, credit, conversationId, discover, reverify, workspace, savedLease: currentSession.dsmack.guest,
       changed: (status) => {
         const held = guests.get(conversationId);
         if (held) {
@@ -799,6 +799,21 @@ function directoryFailure(e) {
   return "Broker guest directory unavailable" + (e.status ? ` (HTTP ${e.status})` : "") +
     (e.message && !e.message.startsWith("Broker /nodes") ? `: ${e.message}` : ".");
 }
+async function reverify({ registration: prior, signal }) {
+  const peer = prior.relay_peer;
+  const challenge = sandbox.hex(crypto.getRandomValues(new Uint8Array(32)));
+  performance.mark("dsmack:attestation:start", { detail: { peer } });
+  const registration = await api("/sandbox/nodes/" + encodeURIComponent(peer) + "/attestation?challenge=" + challenge, undefined, { signal });
+  performance.mark("dsmack:attestation:response", { detail: { peer } });
+  require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
+  const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
+  require(registration.payments?.challenge === challenge, "Node challenge mismatch. Stale attestation refused.");
+  require(Number(registration.admit_until) * 1000 >= Date.now() + 30000 &&
+    registration.payments.runExpires * 1000 >= Date.now() + 30000,
+    "Guest is too close to drain to reconnect.");
+  performance.mark("dsmack:attestation:verified", { detail: { peer } });
+  return checked;
+}
 async function discover({ peer: browserPeer, wait = false, deadline = Date.now() + (wait ? 90000 : 0), exclude = new Set(), signal, workspace, claim } = {}) {
   require(policy, "The bundled sandbox policy could not load. Refresh the page before sending a job.");
   const manifestHash = sandbox.hex(new Uint8Array(await crypto.subtle.digest("SHA-256", policy.manifest)));
@@ -944,7 +959,7 @@ function measuredEnvironment() {
   };
 }
 function renderGuest(status) {
-  const held = ["held", "connecting", "disconnected-held", "handover"].includes(status.state);
+  const held = ["held", "connecting", "reconnecting", "disconnected-held", "handover"].includes(status.state);
   $("end-session").disabled = !held;
   $("download").disabled = status.state !== "held";
   $("save-workspace").disabled = status.state !== "held";
@@ -956,8 +971,9 @@ function renderGuest(status) {
     idle: "Guest starts when the agent first uses a tool.",
     verifying: "Verifying an available guest…",
     connecting: "Connecting to the verified guest…",
+    reconnecting: "Reconnecting to this conversation’s guest…",
     held: "Guest held for this conversation: " + status.node?.relay_peer,
-    "disconnected-held": "Guest disconnected. The next tool call resumes this conversation’s saved workspace.",
+    "disconnected-held": "Connection paused. The next tool call reconnects to this conversation’s guest.",
     handover: "Saving workspace and moving to the next guest…",
     sealing: "Saving workspace and releasing the guest…",
     released: status.closedReason === "credit" ? "Credit used up. Add credit to continue with your saved workspace."
