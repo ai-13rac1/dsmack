@@ -55,10 +55,18 @@ export default async function handler(req: Request,ctx?: {env:Record<string,stri
     const bytes = await Deno.readFile(
       new URL(file.split("/").map(encodeURIComponent).join("/"), root),
     );
-    const headers = { ...security };
+    const headers: Record<string, string> = { ...security };
+    headers["cache-control"] = /\.[0-9a-f]{16}\.(js|css)$/.test(file)
+      ? "public, max-age=31536000, immutable" : "no-cache";
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    headers["etag"] = '"' + Array.from(digest, b => b.toString(16).padStart(2, "0")).join("") + '"';
     if (file === "network/index.html") {
       const hash = new TextDecoder().decode(bytes).match(/script-src 'sha256-([A-Za-z0-9+/]{43}=)'/)?.[1];
       if (hash) headers["content-security-policy"] = security["content-security-policy"].replace("script-src 'self'", `script-src 'sha256-${hash}'`);
+    }
+    if (req.headers.get("if-none-match")?.split(",").some(value =>
+      value.trim() === "*" || value.trim().replace(/^W\//, "") === headers["etag"])) {
+      return new Response(null, { status: 304, headers });
     }
     return new Response(req.method === "HEAD" ? null : bytes, {
       headers: {

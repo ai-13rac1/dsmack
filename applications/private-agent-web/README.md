@@ -88,6 +88,12 @@ The email-code path remains available under Email code. Configure SMTP_HOST,
 SMTP_PORT, SMTP_TLS, SMTP_USER, SMTP_PASSWORD and SMTP_FROM for code delivery;
 SMTP_TLS defaults to implicit TLS on port 465.
 
+The build names JavaScript and CSS assets by their content hash and keeps
+`index.html` and `config.json` at stable paths, including in the IPFS release.
+The handler revalidates documents/config with ETags and caches hashed assets
+as immutable. The main page registers no service worker; isolated apps use a
+separate worker on the artifacts origin.
+
 Build on a development host with Node 24 or newer:
 
 ```sh

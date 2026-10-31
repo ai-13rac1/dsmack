@@ -1,12 +1,14 @@
 import { build } from "esbuild";
 import { generateManifest } from "./bridge/generate.mjs";
 import { piPromptPlugin } from "../compute-node/pi-browser-build.mjs";
-import { copyFile, cp, mkdir } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 const app = dirname(fileURLToPath(import.meta.url));
 const pi = resolve(app, "node_modules/@earendil-works/pi-web-ui/dist");
 await generateManifest();
+await rm(resolve(app, "dist"), { recursive: true, force: true });
 await mkdir(resolve(app, "dist"), { recursive: true });
 await build({
   absWorkingDir: app,
@@ -27,10 +29,19 @@ await build({
   define: { "process.env.NODE_ENV": '"production"' },
   logLevel: "info",
 });
-for (const name of ["index.html", "style.css", "config.json"]) {
+for (const name of ["style.css", "config.json"]) {
   await copyFile(resolve(app, name), resolve(app, "dist", name));
 }
 await copyFile(resolve(pi, "app.css"), resolve(app, "dist/pi.css"));
+let html = await readFile(resolve(app, "index.html"), "utf8");
+for (const name of ["app.js", "wallet-bootstrap.js", "style.css", "pi.css"]) {
+  const path = resolve(app, "dist", name);
+  const hash = createHash("sha256").update(await readFile(path)).digest("hex").slice(0, 16);
+  const hashed = name.replace(/\.(js|css)$/, `.${hash}.$1`);
+  await rename(path, resolve(app, "dist", hashed));
+  html = html.replaceAll(`./${name}`, `./${hashed}`);
+}
+await writeFile(resolve(app, "dist/index.html"), html);
 // The public network view is dependency-free and shares this IPFS release.
 const { copyDashboard } = await import("../network-dashboard/build.mjs");
 await copyDashboard(resolve(app, "dist/network"));
