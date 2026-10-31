@@ -1,4 +1,5 @@
 import { verifyMessage } from "../payments/schema.mjs";
+import { accrue } from "./payments.mjs";
 import { canonical } from "./grants.mjs";
 
 export class InferenceError extends Error {
@@ -185,6 +186,7 @@ export class Inference {
       "wallet signature does not verify",
       403,
     );
+    await this.payments.syncBalance?.(wallet);
     await this.payments.serial(async () => {
       const state = this.payments.state;
       const next = { ...state };
@@ -216,6 +218,8 @@ export class Inference {
           nonces: {},
         };
       }
+      check(!a.exitRequestedAt || ["credit", "usage", "agent-status", "agent-end"].includes(action),
+        "ACCOUNT_EXITING", "prepaid account is closing", 403);
       check(
         !Object.hasOwn(a.nonces, r.nonce),
         "REQUEST_REPLAY",
@@ -689,12 +693,15 @@ export class Inference {
         "wallet request ledger changed",
         502,
       );
+      const allocation = accrue(state, wallet, this.payments.cfg?.inferenceOperator, cost, this.now());
       await this.save({
         ...state,
+        ...(allocation.operatorAccruals ? { operatorAccruals: allocation.operatorAccruals } : {}),
         inferenceCredit: {
           ...state.inferenceCredit,
           [wallet]: {
             ...account,
+            ...(allocation.prepaidSpentNanoUsd ? { prepaidSpentNanoUsd: allocation.prepaidSpentNanoUsd } : {}),
             pending: null,
             lastModelCharge: { sessionId: current.sessionId, inferenceId: current.inferenceId, costNanoUsd: String(cost) },
             ...(current.artifactId !== undefined ? { artifactBudgets: { ...account.artifactBudgets,

@@ -2,6 +2,7 @@
 """Deploy from the sprint test funding wallet on Base Sepolia."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -94,6 +95,9 @@ def main():
     # No auto retry/resume after any partially submitted deployment.
     if any((output / f"{label}-transaction.json").exists() for label in ("deploy", "funding")):
         raise RuntimeError("existing submitted transaction record; inspect receipts before any new deployment")
+    usdc = os.environ.get("PAYMENTS_USDC", "")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", usdc) or int(usdc, 16) == 0:
+        raise ValueError("PAYMENTS_USDC must name the Base Sepolia USDC token")
     quorum = Quorum(tuple(os.environ.get("PAYMENTS_RPC_URLS", "").split(","))) if os.environ.get("PAYMENTS_RPC_URLS") else Quorum()
     header = quorum.finalized()
     if int(quorum.at("eth_getBalance",[account.address],header),16)<20_000_000_000_000_000:
@@ -105,18 +109,25 @@ def main():
     bytecode = artifact["bytecode"]["object"]
     if not bytecode.startswith("0x"):
         bytecode = "0x" + bytecode
-    deploy = send(account, quorum, output, "deploy", data=bytecode + OWNER[2:].lower().zfill(64))
+    deploy = send(account, quorum, output, "deploy", data=bytecode + usdc[2:].lower().zfill(64) + OWNER[2:].lower().zfill(64))
     address = to_checksum_address(deploy["contractAddress"])
-    # Check exact compiled runtime, including the immutable owner, at the receipt's block hash.
+    # Check runtime with immutable slots masked, then check both immutable values.
     expected = bytearray.fromhex(artifact["deployedBytecode"]["object"].removeprefix("0x"))
+    code = quorum.at("eth_getCode", [address], {"hash": deploy["blockHash"]})
+    actual = bytearray.fromhex(code.removeprefix("0x"))
     for offsets in artifact["deployedBytecode"]["immutableReferences"].values():
         for offset in offsets:
-            expected[offset["start"]:offset["start"] + offset["length"]] = int(OWNER, 16).to_bytes(offset["length"], "big")
-    code = quorum.at("eth_getCode", [address], {"hash": deploy["blockHash"]})
-    if bytes.fromhex(code.removeprefix("0x")) != expected:
-        raise RuntimeError("deployed runtime/owner differs from compiled artifact; funding stopped")
+            start, length = offset["start"], offset["length"]
+            expected[start:start + length] = bytes(length)
+            actual[start:start + length] = bytes(length)
+    if actual != expected:
+        raise RuntimeError("deployed runtime differs from compiled artifact")
+    for selector, wanted in (("0x8da5cb5b", OWNER), ("0xfc0c546a", usdc)):
+        value = quorum.at("eth_call", [{"to": address, "data": selector}], {"hash": deploy["blockHash"]})
+        if value[-40:].lower() != wanted[2:].lower():
+            raise RuntimeError("deployed owner/token differs")
     persist(output / "deployment.json", {"chainId": CHAIN_ID, "address": address, "owner": OWNER,
-                "transactionHash": deploy["transactionHash"], "runtimeKeccak": "0x" + keccak(expected).hex(),
+                "transactionHash": deploy["transactionHash"], "runtimeKeccak": "0x" + keccak(bytes.fromhex(code[2:])).hex(), "usdc": usdc,
                 "fundingWallet": funding})
     persist(output / "deployed.json", json.loads((output / "deployment.json").read_text()))
     print(f"Contract: {address}\nFunding wallet / owner: {funding}", flush=True)

@@ -258,7 +258,7 @@ func serve(relay, brokerURL, brokerHex, cdhash, worker string, seconds int) (ser
 	if remaining <= 480*time.Second {
 		return fmt.Errorf("insufficient measured guest lifetime")
 	}
-	n := &engine{secret: secret, signer: signer, broker: key, node: h.ID().String(), until: time.Now().Add(remaining), resultPath: "/workspace/artifacts/last-result", seen: map[string]bool{}}
+	n := &engine{paid: paid, secret: secret, signer: signer, broker: key, node: h.ID().String(), until: time.Now().Add(remaining), resultPath: "/workspace/artifacts/last-result", seen: map[string]bool{}}
 	if paid != nil && paid.RunExpires > n.until.Unix() {
 		paid.RunExpires = n.until.Unix()
 	}

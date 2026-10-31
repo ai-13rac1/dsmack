@@ -689,3 +689,16 @@ test("completed provider reply stays busy while ciphertext is queued for its HTT
   await response.text();
   assert.equal(f.inference.status().inFlightStreams, 0);
 });
+
+test("funded inference debit accrues exactly once to the configured provider payee",async()=>{
+ const f=fixture();await f.credit();
+ const wallet=f.wallet.address.toLowerCase(),operator=Wallet.createRandom().address.toLowerCase();
+ f.payments.cfg.inferenceOperator=operator;
+ f.payments.state.inferenceCredit[wallet].depositedNanoUsd="1000000";
+ const response=await f.send();await response.text();
+ await f.inference.usage(await f.signed("usage"));
+ await f.inference.usage(await f.signed("usage"));
+ assert.equal(f.inference.summary(wallet).spentNanoUsd,"300");
+ assert.equal(f.payments.state.inferenceCredit[wallet].prepaidSpentNanoUsd,"300");
+ assert.equal(Object.values(f.payments.state.operatorAccruals[wallet][operator]).reduce((n,v)=>n+BigInt(v),0n),300n);
+});

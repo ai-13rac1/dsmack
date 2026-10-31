@@ -101,7 +101,7 @@ restart; `--operator PATH` selects another configuration.
 Pack the matching guest size by supplying the operator file as the final
 argument to `workload.py`. The compose manifest and launch
 image's `resource_profiles` bind the memory and vCPU count. Each size uses its
-own escrow node class, compose measurement and price; register the packed class
+own escrow node class and compose measurement; register the packed class
 with `applications/payments/register-class.mjs` before starting the pool.
 
 Each configured slot rotates independently: a replacement starts after 450

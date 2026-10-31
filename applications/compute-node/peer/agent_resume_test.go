@@ -88,6 +88,7 @@ func TestAgentResumeRetainsStayAndCancelsLostToolWithoutReplay(t *testing.T) {
 	t.Setenv("AGENT_MCP_SOCKET", socket)
 	pub, signer, _ := ed25519.GenerateKey(rand.Reader)
 	receiptPub, receiptKey, _ := ed25519.GenerateKey(rand.Reader)
+	meter := testReceiptMeter(t)
 	secret, _ := ecdh.P256().GenerateKey(rand.Reader)
 	server, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 	if err != nil {
@@ -107,9 +108,12 @@ func TestAgentResumeRetainsStayAndCancelsLostToolWithoutReplay(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		sig, _ := hex.DecodeString(body["sig"].(string))
+		sigText, _ := body["sig"].(string)
+		sig, _ := hex.DecodeString(sigText)
 		delete(body, "sig")
-		if !ed25519.Verify(receiptPub, canon(body), sig) {
+		if r.URL.Path == "/agent/receipt" {
+			body = checkAgentReceipt(t, body, meter)
+		} else if !ed25519.Verify(receiptPub, canon(body), sig) {
 			t.Error("receipt signature")
 		}
 		mu.Lock()
@@ -141,7 +145,7 @@ func TestAgentResumeRetainsStayAndCancelsLostToolWithoutReplay(t *testing.T) {
 		}
 	}))
 	defer broker.Close()
-	n := &engine{secret: secret, broker: pub, signer: receiptKey, node: server.ID().String(), until: time.Now().Add(30 * time.Second), admissionUntil: time.Now().Add(25 * time.Second), seen: map[string]bool{}, resultPath: filepath.Join(root, "artifacts", "last-result")}
+	n := &engine{paid: meter, secret: secret, broker: pub, signer: receiptKey, node: server.ID().String(), until: time.Now().Add(30 * time.Second), admissionUntil: time.Now().Add(25 * time.Second), seen: map[string]bool{}, resultPath: filepath.Join(root, "artifacts", "last-result")}
 	retired := make(chan struct{})
 	var retireOnce sync.Once
 	server.SetStreamHandler(agentProtocol, func(s network.Stream) {
@@ -343,9 +347,9 @@ func TestAgentResumeRetainsStayAndCancelsLostToolWithoutReplay(t *testing.T) {
 	defer mu.Unlock()
 	finals := 0
 	for _, body := range receipts {
-		if body["final"] == true {
+		if body["finalReceipt"] == true {
 			finals++
-			if body["closedReason"] != "owner" || body["guestSeconds"].(float64) <= float64(before) {
+			if n.closedReason != "owner" || body["used"] == "0" {
 				t.Fatal("final retained usage", body)
 			}
 		}
@@ -378,6 +382,7 @@ func TestDetachedAgentStillEndsAtIdleOrDrain(t *testing.T) {
 		t.Run(reason, func(t *testing.T) {
 			pub, key, _ := ed25519.GenerateKey(rand.Reader)
 			_, signer, _ := ed25519.GenerateKey(rand.Reader)
+			meter := testReceiptMeter(t)
 			server, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 			if err != nil {
 				t.Fatal(err)
@@ -408,7 +413,8 @@ func TestDetachedAgentStillEndsAtIdleOrDrain(t *testing.T) {
 			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
-				if body["final"] == true {
+				body = checkAgentReceipt(t, body, meter)
+				if body["finalReceipt"] == true {
 					mu.Lock()
 					final = body
 					mu.Unlock()
@@ -416,7 +422,7 @@ func TestDetachedAgentStillEndsAtIdleOrDrain(t *testing.T) {
 				io.WriteString(w, `{"stop":false,"activeBudgetSeconds":20}`)
 			}))
 			defer broker.Close()
-			n := &engine{broker: pub, signer: signer, node: server.ID().String(), until: time.Now().Add(10 * time.Second), seen: map[string]bool{}, resultPath: filepath.Join(directory, "last-result")}
+			n := &engine{paid: meter, broker: pub, signer: signer, node: server.ID().String(), until: time.Now().Add(10 * time.Second), seen: map[string]bool{}, resultPath: filepath.Join(directory, "last-result")}
 			idle := 250 * time.Millisecond
 			if reason == "drain" {
 				idle = 5 * time.Second
@@ -453,7 +459,7 @@ func TestDetachedAgentStillEndsAtIdleOrDrain(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if final == nil || final["closedReason"] != reason || final["guestSeconds"] != float64(0) {
+			if final == nil || n.closedReason != reason || final["used"] != "0" {
 				t.Fatal("detached final reason/billing", final)
 			}
 		})

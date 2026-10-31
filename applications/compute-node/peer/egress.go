@@ -185,7 +185,7 @@ func (g *nodeGateways) start(name, listen string, policy map[string]any, hostnam
 
 func brokerGatewayPolicy(broker, index *url.URL) map[string]any {
 	base := strings.TrimRight(broker.Path, "/")
-	paths := []string{index.Path, base + "/nodes", base + "/payments/challenge", base + "/payments/receipts", base + "/agent/receipt", base + "/workspaces/begin", base + "/workspaces/chunk", base + "/workspaces/commit"}
+	paths := []string{index.Path, base + "/nodes", base + "/payments/challenge", base + "/agent/receipt", base + "/workspaces/begin", base + "/workspaces/chunk", base + "/workspaces/commit"}
 	return map[string]any{"rules": []any{map[string]any{
 		"name": broker.Hostname(), "port": 443, "methods": []string{"GET", "POST"}, "paths": paths,
 		"max_request_bytes": 1 << 20, "max_response_bytes": 1 << 20,

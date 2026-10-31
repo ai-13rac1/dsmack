@@ -168,7 +168,7 @@ function page(b: Broker) {
   }).join("");
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Attested egress relay</title><style>body{font:16px system-ui;max-width:65rem;margin:3rem auto;padding:0 1rem;background:#101828;color:#edf2fa}a{color:#8cd8ff}article{border:1px solid #475467;border-radius:12px;padding:1rem;margin:1rem 0}h2,dd,pre{overflow-wrap:anywhere}h2{font-size:1rem}dd{margin:0 0 1rem}pre{white-space:pre-wrap;background:#1d2939;padding:1rem}</style><h1>Attested egress relay</h1><p>${
     b.payments
-      ? "Base Sepolia ETH · prices and paid grants at /payments/nodes"
+      ? "Prepaid USDC · posted prices at /payments/nodes"
       : `Free testnet credit: ${
         limits.max_bytes / 1048576
       } MiB and ${limits.grants_per_hour} grants per client PeerId per hour.`
@@ -327,14 +327,10 @@ export async function handleRequest(req: Request, b: Broker, ctx?: Context) {
         response = Response.json(JSON.parse(json(await p.classes())));
       } else if (req.method === "GET" && path === "/payments/nodes") {
         response = Response.json(await p.list(b.live()));
-      } else if (req.method === "POST" && path === "/payments/confirm") {
-        response = Response.json(await p.confirm(await body(req)));
-      } else if (req.method === "POST" && path === "/payments/grant") {
-        response = Response.json(await p.grant(await body(req), b.live()));
-      } else if (req.method === "POST" && path === "/payments/receipts") {
-        response = Response.json(await p.collect(await body(req)));
-      } else if (req.method === "GET" && path === "/payments/receipts") {
-        response = Response.json(Object.values(p.state.receipts));
+      } else if (req.method === "GET" && path === "/payments/claim") {
+        const query = new URL(req.url).searchParams;
+        response = Response.json(await p.weeklyClaim(query.get("user"), query.get("operator"),
+          query.has("period") ? Number(query.get("period")) : undefined));
       } else response = new Response("not found", { status: 404 });
     } else if (req.method === "GET" && path === "/key") {
       response = Response.json({

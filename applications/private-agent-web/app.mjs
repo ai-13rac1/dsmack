@@ -132,52 +132,6 @@ function render() {
   document.documentElement.dataset.walletLoaded = "true";
   continuity?.update({ hasValue: BigInt(credit.chatCredit?.remainingNanoUsd || "0") > 0n || currentSession?.messages?.some(m => m.role === "user") || agent?.state.messages.some(m => m.role === "user") }).catch(error);
   $("wallet-tools").hidden = !credit.address;
-  const list = $("purchases");
-  list.replaceChildren();
-  if (!credit.purchases.length) {
-    const p = document.createElement("p");
-    p.className = "muted";
-    p.textContent = "No purchases yet.";
-    list.append(p);
-  }
-  for (const p of credit.purchases.filter((p) => p.unit === 1)) {
-    const div = document.createElement("div");
-    div.className = "purchase";
-    const title = document.createElement("strong");
-    title.textContent = `${
-      p.status === "confirmed" ? "Confirmed" : "Pending"
-    } · ${p.amount} seconds`;
-    const label = document.createElement("p");
-    label.className = "small";
-    label.textContent = `${
-      p.closed
-        ? "Closed"
-        : p.uncertain
-        ? "Usage unresolved"
-        : `${BigInt(p.amount) - BigInt(p.used || 0)} remaining`
-    } · ${p.paidWei} wei`;
-    const link = document.createElement("a");
-    link.href = "https://sepolia.basescan.org/tx/" + p.txHash;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = "View purchase on Basescan ↗";
-    link.className = "small";
-    div.append(title, label, link);
-    for (
-      const [key, label] of [["settlementHash", "Settlement"], [
-        "refundHash",
-        "Refund",
-      ]]
-    ) {
-      if (p[key]) {
-        const a = link.cloneNode();
-        a.href = "https://sepolia.basescan.org/tx/" + p[key];
-        a.textContent = " · " + label + " ↗";
-        div.append(a);
-      }
-    }
-    list.append(div);
-  }
   renderChatCredit();
 }
 function renderChatCredit() {
@@ -1031,39 +985,7 @@ async function readRepository(file) {
 }
 
 async function refund() {
-  require(credit.address, "Connect the original purchase wallet.");
-  const p = credit.purchases.find((p) =>
-    p.unit === 1 && !p.closed && p.purchaseId &&
-    p.payer?.toLowerCase() === credit.address.toLowerCase()
-  );
-  if (!p) {
-    const hash = await credit.withdraw();
-    $("service").textContent = "Refund withdrawn: " + hash;
-    return;
-  }
-  const c = await credit.contract();
-  const chainPurchase = await c.getPurchase(p.purchaseId);
-  if (chainPurchase.closed) {
-    p.closed = true;
-    await credit.save();
-  } else if (
-    Math.floor(Date.now() / 1000) >= Number(chainPurchase.expires) + 3600
-  ) {
-    const tx = await c.refund(p.purchaseId);
-    p.refundHash = tx.hash;
-    await credit.save();
-    await tx.wait();
-    p.closed = true;
-    await credit.save();
-  } else if (p.receipt) await credit.settle(p.receipt, p);
-  else {throw new Error(
-      "Unused credit can be refunded after the escrow settlement grace period, or immediately after verified final usage.",
-    );}
-  const hash = await credit.withdraw();
-  p.refundHash = hash;
-  await credit.save();
-  $("service").textContent =
-    "Unused testnet credit withdrawn. View the refund in your purchase card.";
+  $("prepaid-status").textContent = await credit.closeAccount();
 }
 async function checkSync() {
   if (!sync) { $("sync-status").textContent = "Choose how to begin. Chats save on this device."; return; }
@@ -1145,11 +1067,11 @@ async function main() {
       formatEther(await credit.rpc.getBalance(credit.address)) +
       " Base Sepolia ETH";
   });
-  action("refresh", async () => {
-    for (const p of credit.purchases.filter((p) => p.status === "pending")) {
-      await credit.confirm(api, p);
-    }
+  action("deposit", async () => {
+    await credit.deposit($("deposit-amount").value.trim());
+    $("prepaid-status").textContent = "USDC deposited. Refresh credit after chain finality.";
   });
+  action("refresh", refreshServices);
   action("reconcile", () => usage());
   action("refund", refund);
   action("discover", async () => {

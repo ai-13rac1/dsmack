@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	payments "dsmack-payments"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -90,6 +91,7 @@ func checkGrant(g map[string]any, key ed25519.PublicKey, node, client string, no
 }
 
 type engine struct {
+	paid           *payments.Meter
 	secret         *ecdh.PrivateKey
 	signer         ed25519.PrivateKey
 	broker         ed25519.PublicKey

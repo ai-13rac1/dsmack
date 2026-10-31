@@ -143,52 +143,7 @@ export class Quorum {
       },
     };
   }
-  async purchase(s, id, txHash) {
-    require(
-      /^[1-9][0-9]*$/.test(id) && /^0x[0-9a-fA-F]{64}$/.test(txHash),
-      "purchase ID and transaction required",
-    );
-    const tx = await s.read("eth_getTransactionReceipt", [txHash]);
-    require(
-      tx && tx.status === "0x1" &&
-        BigInt(tx.blockNumber) <= BigInt(s.block.number),
-      "purchase not finalized",
-    );
-    const block = await s.read("eth_getBlockByNumber", [tx.blockNumber, false]);
-    require(block.hash === tx.blockHash, "purchase block is not canonical");
-    const event = tx.logs.filter((l) =>
-      l.address.toLowerCase() === this.escrow.toLowerCase()
-    ).map((l) => {
-      try {
-        return abi.parseLog(l);
-      } catch {
-        return null;
-      }
-    }).find((e) =>
-      e?.name === "Purchase" && e.args.purchaseId.toString() === id
-    );
-    require(event, "confirmed Purchase event required");
-    const p = await s.call("getPurchase", [id]);
-    for (
-      const field of [
-        "node",
-        "payer",
-        "buyerKey",
-        "unit",
-        "amount",
-        "price",
-        "expires",
-      ]
-    ) {
-      require(
-        String(p[field]).toLowerCase() ===
-          String(event.args[field]).toLowerCase(),
-        "Purchase event/state mismatch: " + field,
-      );
-    }
-    require(!p.closed, "purchase closed");
-    return p;
-  }
+
 }
 
 // Providers add transport-specific metadata (for example L1 fee extensions).
