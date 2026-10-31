@@ -47,7 +47,7 @@ The per-category bridge contracts live in `bridge/Categories/`; the build runs
 Share app encrypts the original HTML and its functional manifest, pins the
 ciphertext, and shows a link to `/a/` with the decryption key in its fragment.
 The bundle contains code only. Each viewer chooses their own wallet and uses
-their own encrypted storage and model credit. Reloading a link preserves that
+their own encrypted storage and model credit. Apps can call `dsmack.guest.run({command,timeoutSeconds:60})` for one fresh empty guest, after an exact-command confirmation in the host card. Each command releases its guest; files belong to that call. The card can finish releasing an interrupted task after reload. Reloading a link preserves that
 viewer's state and the budget bound to the ciphertext CID.
 
 The included repository contains `greet.txt`. Ask for an edit in chat and choose
