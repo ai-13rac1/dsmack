@@ -76,17 +76,19 @@ matching block, caching successful decisions for thirty seconds. The KMS checks
 the OS image, registered app, allowed compose and device. Enter your
 address and send the prepared recovery email from that account. The page polls
 for its headers; the gate verifies the DKIM signature and browser-bound subject
-nonce, then stores or releases the labelled encrypted recovery wrap. Passkeys
-remain the primary recovery path.
+nonce, then enrolls the labelled encrypted recovery wrap or starts a recovery.
+The gate persists the request and releases keys sealed to that browser only
+after 48 hours. Return to the same browser and choose Check and finish email
+recovery. Existing devices query the gate on open, on returning to the tab and
+every minute while visible; a prominent notice offers one-click cancellation.
+A DK-derived lookup and HMAC authenticate these requests without needing the
+email address. Passkey recovery and QR linking remain immediate.
 
 Set EMAIL_RECOVERY_ADDRESS in the project's private deployment environment and
 connect an inbound forwarder to POST unchanged raw messages to
 `https://private-agent.dstack.soc1024.com/email-recovery/inbound` with Content-Type
 `message/rfc822`. The receiver keeps headers for fifteen minutes. The
 [email receiver](email-receiver/README.md) also includes a local SMTP path.
-The email-code path remains available under Email code. Configure SMTP_HOST,
-SMTP_PORT, SMTP_TLS, SMTP_USER, SMTP_PASSWORD and SMTP_FROM for code delivery;
-SMTP_TLS defaults to implicit TLS on port 465.
 
 The build names JavaScript and CSS assets by their content hash and keeps
 `index.html` and `config.json` at stable paths, including in the IPFS release.
@@ -119,7 +121,7 @@ Deploy the built page using its existing private environment JSON and operator-t
 
 ```sh
 python3 deploy.py --evidence /absolute/path/to/local-data/ui/deploy \
-  --smtp-env /absolute/path/to/private/page-env.json \
+  --page-env /absolute/path/to/private/page-env.json \
   --operator-token-sha256 YOUR_EXISTING_OPERATOR_TOKEN_SHA256
 ```
 
@@ -139,6 +141,8 @@ EVIDENCE=/absolute/path/to/local-data/ux npm run test:ux
 ```
 
 The test starts its own local HTTPS server and captures phone and desktop views.
+Run `EVIDENCE=/absolute/path/to/local-data/recovery node recovery-browser.test.mjs`
+for the email recovery notice and cancel flow against a mocked gate.
 
 Run the generated-app boundary checks with Node 24 and an existing browser:
 

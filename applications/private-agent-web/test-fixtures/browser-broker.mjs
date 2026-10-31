@@ -29,6 +29,7 @@ export async function backend(page, kind) {
     const reply = r => ({jsonrpc:"2.0",id:r.id,result:r.method==="eth_chainId"?"0x14a34":r.method==="eth_getCode"?"0x6000":"0x"+"0".repeat(128)});
     return route.fulfill({headers:publicHeaders,body:JSON.stringify(Array.isArray(raw)?raw.map(reply):reply(raw))});
   });
+  await page.route("**/continuity/email/status", route => route.fulfill({ headers: publicHeaders, body: JSON.stringify({ pending: null }) }));
   const calls = [];
   let recoveredEnded = false;
   await page.route("**/relay-broker/**", async (route) => {

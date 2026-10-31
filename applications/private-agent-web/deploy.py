@@ -75,17 +75,17 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--url", default="https://pod.dstack.soc1024.com")
     parser.add_argument("--operator-token-sha256", required=True)
-    parser.add_argument("--smtp-env", type=Path, required=True, help="Existing private page environment JSON, including email receiver configuration")
+    parser.add_argument("--page-env", type=Path, required=True, help="Existing private page environment JSON, including email receiver configuration")
     args = parser.parse_args()
     if args.operator_token_sha256 and not re.fullmatch(r"[0-9a-f]{64}",args.operator_token_sha256):
         raise ValueError("operator token SHA256 must be lowercase hex")
-    smtp_env = json.loads(args.smtp_env.read_text())
-    if not isinstance(smtp_env, dict) or set(smtp_env) - {"SMTP_HOST", "SMTP_PORT", "SMTP_TLS", "SMTP_FROM", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_RECOVERY_ADDRESS"}:
-        raise ValueError("SMTP configuration contains unsupported keys")
-    if not smtp_env.get("EMAIL_RECOVERY_ADDRESS"):
+    page_env = json.loads(args.page_env.read_text())
+    if not isinstance(page_env, dict) or set(page_env) - {"EMAIL_RECOVERY_ADDRESS"}:
+        raise ValueError("Page environment contains unsupported keys")
+    if not page_env.get("EMAIL_RECOVERY_ADDRESS"):
         raise ValueError("The existing page environment must include EMAIL_RECOVERY_ADDRESS")
-    if any(not isinstance(value, str) for value in smtp_env.values()):
-        raise ValueError("SMTP configuration values must be strings")
+    if any(not isinstance(value, str) for value in page_env.values()):
+        raise ValueError("Page environment values must be strings")
     archive = package(args.dist.resolve())
     ref = subprocess.check_output(["git", "-C", str(APP), "rev-parse", "HEAD"], text=True).strip()
     args.evidence.mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,7 @@ def main():
         "mode": "attested",
         "entry": "server.ts",
         "isolation": "shared",
-        "env": {**smtp_env, "OPERATOR_TOKEN_SHA256":args.operator_token_sha256},
+        "env": {**page_env, "OPERATOR_TOKEN_SHA256":args.operator_token_sha256},
     }
     boundary = "private-agent-" + secrets.token_hex(16)
     body = (

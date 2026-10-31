@@ -5,6 +5,7 @@
 <main>
 
 <div class="workspace">
+<section id="email-recovery-notice" class="recovery-notice" role="alert" hidden><strong>Email recovery requested</strong><p id="email-recovery-notice-text"></p><button id="cancel-email-recovery">Cancel email recovery</button></section>
 <div class="intro"><h1>What are we building?</h1></div>
 <section><div id="welcome" hidden><h2>Welcome</h2><p>Start fresh, or bring your wallet and chats from another device.</p><div class="actions"><button id="start-fresh" disabled>Start fresh</button><button id="used-before" class="secondary" disabled>I’ve used this before</button></div></div>
 <div id="continuity-panel" hidden><h2>Your wallet and chats, everywhere</h2>
@@ -18,8 +19,8 @@
 <p id="link-code" class="mono" aria-live="polite"></p><div id="link-confirm" hidden><p>Compare this code on both devices before allowing access to your wallet and chats.</p><button id="link-approve">Codes match · Allow</button><button id="link-deny" class="secondary">Cancel</button></div>
 <h3>Email recovery</h3><p class="small muted">Add your email on the original browser first. Then use Recover with email here to restore the same wallet and chats.</p><label for="recovery-email">Email address</label><input id="recovery-email" type="email" autocomplete="email"><div class="actions"><button id="enroll-email" class="secondary">Add recovery email</button><button id="request-email" class="secondary">Recover with email</button></div>
 <a id="send-recovery-email" role="button" hidden>Send recovery email ↗</a>
-<p class="small muted">Send the prepared message from your own email account, then return here.</p>
-<details><summary>Recover with an email code</summary><div class="actions"><button id="enroll-email-smtp" class="secondary">Add email with a code</button><button id="request-email-smtp" class="secondary">Send recovery code</button></div><label for="recovery-code">Email code</label><input id="recovery-code" inputmode="numeric" autocomplete="one-time-code"><button id="confirm-email">Verify code</button></details>
+<p class="small muted">Send the prepared message from your own email account, then return here. Email recovery takes 48 hours; passkeys and QR links work immediately.</p>
+<button id="finish-email-recovery" hidden>Check and finish email recovery</button>
 <details><summary>Move from an older origin</summary><label for="old-origin">Previous app URL</label><input id="old-origin" type="url" placeholder="https://…/private-agent/"><button id="migrate-origin" class="secondary">Open previous app</button></details>
 <p id="continuity-status" role="status">Recover your wallet, or start fresh and add a recovery method.</p></div></section>
 <div id="alert" role="alert" hidden></div>
