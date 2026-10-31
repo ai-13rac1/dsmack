@@ -11,6 +11,7 @@ export {
   computeAddress,
   FetchRequest,
   formatEther,
+  formatUnits,
   getAddress,
   JsonRpcProvider,
   keccak256,
@@ -29,6 +30,7 @@ export const RPCS = [
 export const Receipt = [
   { name: "purchaseId", type: "uint256" },
   { name: "sequence", type: "uint64" },
+  { name: "unit", type: "uint8" },
   { name: "used", type: "uint128" },
   { name: "endedAt", type: "uint64" },
   { name: "finalReceipt", type: "bool" },
@@ -50,25 +52,35 @@ export const domain = (escrow) => ({
   chainId: CHAIN,
   verifyingContract: getAddress(escrow),
 });
+export const Claim = [
+  { name: "operator", type: "address" },
+  { name: "cumulativeOwed", type: "uint256" },
+  { name: "period", type: "uint64" },
+];
+export const claimDomain = (escrow, user, chainId = CHAIN) => ({
+  name: "DsmackPrepaid", version: "1", chainId, verifyingContract: getAddress(escrow),
+  salt: "0x" + user.slice(2).toLowerCase().padStart(64, "0"),
+});
+export const receiptDomain = (escrow) => ({ ...domain(escrow), name: "dsmack.receipt", version: "5" });
 export const abi = new Interface([
   "function owner() view returns (address)",
   "function brokerSigner() view returns (address)",
+  "function token() view returns (address)",
   "function registerBroker(address)",
-  "function registerNode(bytes32,address,uint8,uint128,uint128,bytes32,bytes32)",
-  "function checkpoint(bytes32)",
-  "function quote(bytes32) view returns (uint128)",
-  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,uint128 floorPrice,uint128 target,uint128 price,uint128 booked,uint64 epoch,bytes32 composeHash,bytes32 imageHash))",
-  "function getPurchase(uint256) view returns (tuple(bytes32 node,address payer,bytes32 buyerKey,address operator,uint8 unit,uint128 amount,uint128 price,uint128 floorPrice,uint64 boughtAt,uint64 expires,uint64 sequence,uint128 used,uint64 endedAt,bool closed,bytes32 bindingHash))",
-  "function buy(bytes32,uint8,uint128,bytes32) payable returns (uint256)",
-  "function settle(tuple(uint256 purchaseId,uint64 sequence,uint128 used,uint64 endedAt,bool finalReceipt)[],bytes[],tuple(bytes32 node,address operator,address receiptSigner,bytes32 composeHash,bytes32 imageHash,bytes32 runId,uint64 expires),bytes)",
-  "function refund(uint256)",
+  "function registerNode(bytes32,address,uint8,bytes32,bytes32)",
+  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,bytes32 composeHash,bytes32 imageHash))",
+  "function deposits(address) view returns (uint256)",
+  "function paid(address) view returns (uint256)",
+  "function withdrawn(address) view returns (uint256)",
+  "function balance(address) view returns (uint256)",
+  "function exitRequestedAt(address) view returns (uint64)",
+  "function deposit(uint256)",
+  "function requestExit()",
   "function withdraw()",
-  "function credits(address) view returns (uint256)",
-  "function lockedPremium() view returns (uint256)",
-  "function receiptDigest(tuple(uint256 purchaseId,uint64 sequence,uint128 used,uint64 endedAt,bool finalReceipt)) view returns (bytes32)",
-  "event Purchase(uint256 indexed purchaseId,bytes32 indexed node,address indexed payer,bytes32 buyerKey,uint8 unit,uint128 amount,uint128 price,uint64 expires)",
-  "event Settled(uint256 indexed purchaseId,uint64 sequence,uint128 used,uint256 operatorCredit,uint256 premium,bool finalReceipt)",
-  "event Refunded(uint256 indexed purchaseId,address indexed payer,uint256 amount)",
+  "function claim(address,tuple(address operator,uint256 cumulativeOwed,uint64 period),bytes)",
+  "function claimed(address,address) view returns (uint256)",
+  "event Deposited(address indexed user,uint256 amount)",
+  "event Claimed(address indexed user,address indexed operator,uint256 cumulativeOwed,uint64 period)",
 ]);
 const coder = AbiCoder.defaultAbiCoder();
 export const runNode = (enrollmentKeyId, runNonce) =>
@@ -101,17 +113,17 @@ export function receiptSigner(escrow, envelope) {
   require(
     r &&
       Object.keys(r).sort().join() ===
-        "endedAt,finalReceipt,purchaseId,sequence,used",
+        "endedAt,finalReceipt,purchaseId,sequence,unit,used",
     "receipt fields",
   );
   require(
     /^[1-9][0-9]*$/.test(r.purchaseId) && /^(0|[1-9][0-9]*)$/.test(r.used) &&
       Number.isSafeInteger(r.sequence) && r.sequence > 0 &&
       Number.isSafeInteger(r.endedAt) && r.endedAt > 0 &&
-      typeof r.finalReceipt === "boolean",
+      [0, 1].includes(r.unit) && typeof r.finalReceipt === "boolean",
     "receipt encoding",
   );
-  return verifyTypedData(domain(escrow), { Receipt }, r, envelope.signature);
+  return verifyTypedData(receiptDomain(escrow), { Receipt }, r, envelope.signature);
 }
 export const grantSigner = (escrow, g) =>
   verifyTypedData(domain(escrow), { Grant }, g.grant, g.signature);

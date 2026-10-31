@@ -162,3 +162,16 @@ provider address. Kubo republishes IPNS while running. Compute pools can drain
 while this publisher keeps serving pins. `kill -TERM PUBLISHER_PID` stops its
 daemon and tunnel, retaining the repository, pins and key for the next launch.
 Use the final subdomain gateway origin in the broker allowlist.
+
+USDC top-ups and the 14 day account exit are in the Prepaid USDC details. Guest
+seconds and inference draw from the same broker ledger; an unused guest grant is
+free and an admitted S1 stay has a 60 second minimum. To test top-ups, withdrawal
+and fleet USDC payouts using a local chain, build the contracts and page, run
+`anvil --chain-id 84532 --port 18545 --silent`, then from this directory:
+
+```sh
+EVIDENCE=/absolute/path/to/evidence node prepaid.browser.mjs
+```
+
+The test serves the built page locally, intercepts service requests, and submits
+USDC transactions only to anvil. It writes deposit, withdrawal and fleet screenshots.

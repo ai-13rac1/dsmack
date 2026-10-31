@@ -3,14 +3,15 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/ed25519"
-	"encoding/hex"
+	payments "dsmack-payments"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -115,16 +116,15 @@ func (n *engine) handleMCPIdle(s network.Stream, brokerURL string, client *http.
 		if final {
 			finalized = true
 		}
-		body := map[string]any{"sessionId": t.id, "node_peer": n.node, "guestSeconds": used(), "final": final}
-		if final {
-			n.mu.Lock()
-			reason := n.closedReason
-			n.mu.Unlock()
-			if reason != "" {
-				body["closedReason"] = reason
-			}
+		if n.paid == nil {
+			return true, fmt.Errorf("attested secp256k1 receipt meter required")
 		}
-		body["sig"] = hex.EncodeToString(ed25519.Sign(n.signer, canon(body)))
+		purchase, _ := new(big.Int).SetString(t.id, 16)
+		body, err := n.paid.Receipt(payments.Grant{PurchaseID: purchase.String(), Unit: 1,
+			Amount: strconv.FormatInt(t.seconds, 10), ServiceUntil: t.expires}, used(), final)
+		if err != nil {
+			return true, err
+		}
 		// Retain the signed original before submitting, including when the broker
 		// is unavailable during shutdown. It can be replayed idempotently.
 		resultPath := n.resultPath
@@ -148,7 +148,6 @@ func (n *engine) handleMCPIdle(s network.Stream, brokerURL string, client *http.
 			Reason              string `json:"reason"`
 			ActiveBudgetSeconds *int64 `json:"activeBudgetSeconds"`
 		}
-		var err error
 		attempts := 1
 		if final {
 			attempts = 3

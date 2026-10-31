@@ -15,6 +15,8 @@ const cfg = {
   rpcIpv4: true,
   fundingAddress: deployment.fundingWallet,
   grantSigner,
+  inferenceOperator: deployment.fundingWallet,
+  prices: { S1: { nanoUsdPerSecond: "15000", minimumSeconds: 60 } },
   destinationPolicyHash,
   attest: "0xdd86D0da349104534AbE7155DBc04D33B74C0A53",
   canary: "0xdC66c90291973167126a3c4455D5A6064634f3B1",

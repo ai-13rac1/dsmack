@@ -28,7 +28,7 @@ its `base_vm.os_image_hash`. For off-chain enrollment, `enroll.py ENROLLMENT
 CDHASH` verifies the Apple chain and emits a public enrollment entry for the
 config's `enrollments` array.
 
-Keep the existing `payments` block to serve the current escrow. Add the
+Configure the prepaid USDC `payments` block as in `../payments/README.md`. Add the
 `inference` block from `config.inference.example.json`, including approved NEAR
 gateway/model compose hashes and allowed browser origins. Amounts are integer
 nano-USD: 1,000,000,000 equals $1.00. The browser receives starter credit and
@@ -112,13 +112,13 @@ The deployment manifest contains the operator hash and ciphertext envelope.
 - `GET /key`, `/payments/key`: signing public keys.
 - `GET /relays`, `/nodes`: live attested registrations; `POST` renews them.
 - `POST /grant`: signed Ed25519 request for byte/time credit.
-- `/payments/challenge`, `/classes`, `/nodes`, `/confirm`, `/grant`, `/receipts`:
-  payment admission and signed usage receipts under `/payments`.
+- `/payments/challenge`, `/classes`, `/nodes`, `/claim`:
+  payment admission, posted S1 prices and weekly cumulative USDC claims.
 - `GET /inference/quote`, `/status`, `/environment-key`: public configuration.
 - `POST /inference/credit`, `/prepare`, `/chat`, `/usage`: EIP-191 wallet requests
   to claim credit, attest the model, dispatch ciphertext and reconcile costs.
 - `POST /agent/open`, `/status`, `/end`: wallet-signed guest sessions;
-  `POST /agent/receipt` accepts guest-signed usage.
+  `POST /agent/receipt` accepts v5 EIP-712 usage signed by the attested secp256k1 key.
 - `GET /sandbox/nodes/PEER/attestation?challenge=HEX`: fresh node evidence.
 - `/sandbox/p2p/*`: bounded HTTPS backhaul to the native libp2p transport.
 - `GET/POST /tunnels`: discover and publish expiring browser tunnel hints.

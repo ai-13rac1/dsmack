@@ -4,7 +4,7 @@ import { address, tunnel } from "../browser-p2p/tunnels.mjs";
 const index = new Interface(["function owner() view returns (address)", "function entries() view returns (string)"]);
 const escrow = new Interface([
   "function brokerSigner() view returns (address)",
-  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,uint128 floorPrice,uint128 target,uint128 price,uint128 booked,uint64 epoch,bytes32 composeHash,bytes32 imageHash))",
+  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,bytes32 composeHash,bytes32 imageHash))",
 ]);
 const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);

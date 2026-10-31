@@ -9,7 +9,7 @@ const entry = { url: "wss://test-guest.trycloudflare.com/", relayPeer: peer, gue
 const index = new Interface(["function owner() view returns (address)", "function entries() view returns (string)"]);
 const escrow = new Interface([
   "function brokerSigner() view returns (address)",
-  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,uint128 floorPrice,uint128 target,uint128 price,uint128 booked,uint64 epoch,bytes32 composeHash,bytes32 imageHash))",
+  "function getNode(bytes32) view returns (tuple(address operator,uint8 unit,bytes32 composeHash,bytes32 imageHash))",
 ]);
 const canonical = value => JSON.stringify(value, (_, v) => v && typeof v === "object" && !Array.isArray(v)
   ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
@@ -40,7 +40,7 @@ async function fixture({ disagree, composeHash = word(3) } = {}) {
       if (call.name === "owner") result = abi.encodeFunctionResult("owner", [publisher.address]);
       if (call.name === "entries") result = abi.encodeFunctionResult("entries", [JSON.stringify(publication)]);
       if (call.name === "brokerSigner") result = abi.encodeFunctionResult("brokerSigner", [publisher.address]);
-      if (call.name === "getNode") result = abi.encodeFunctionResult("getNode", [[publisher.address, 1, 1, 30, 1, 0, 1, composeHash, word(4)]]);
+      if (call.name === "getNode") result = abi.encodeFunctionResult("getNode", [[publisher.address, 1, composeHash, word(4)]]);
       if (disagree === call.name && url.includes("two")) result += "00";
     }
     return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
