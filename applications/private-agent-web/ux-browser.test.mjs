@@ -12,7 +12,7 @@ await mkdir(evidence, { recursive: true });
 const tls = await mkdtemp(resolve(evidence, 'tls-'));
 const keyPath = resolve(tls, 'key.pem'), certPath = resolve(tls, 'cert.pem');
 await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-keyout', keyPath, '-out', certPath]);
-const model = 'deepseek-ai/DeepSeek-V4-Flash';
+import { model } from './test-fixtures/near.mjs';
 function encrypt(text, publicKey) {
   const ephemeral = Wallet.createRandom(), nonce = randomBytes(12);
   const point = Buffer.from(new SigningKey(ephemeral.privateKey).computeSharedSecret('0x04' + publicKey).slice(2), 'hex');

@@ -278,7 +278,7 @@ try {
         await alert(
           page,
           kind === "nonce"
-            ? "stale or reused nonce"
+            ? "nonce"
             : kind === "key"
             ? "differs from the attested signing address"
             : "invalid or names another model",

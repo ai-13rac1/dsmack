@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 import { generateManifest } from "./bridge/generate.mjs";
 import { piPromptPlugin } from "../compute-node/pi-browser-build.mjs";
@@ -47,3 +48,5 @@ const { copyDashboard } = await import("../network-dashboard/build.mjs");
 await copyDashboard(resolve(app, "dist/network"));
 await import("../operator-fleet/build.mjs");
 await cp(resolve(app, "../operator-fleet/dist"), resolve(app, "dist/fleet"), { recursive: true });
+
+execFileSync("python3", [resolve(app, "bundle.py"), resolve(app, "dist")], { stdio: "inherit" });

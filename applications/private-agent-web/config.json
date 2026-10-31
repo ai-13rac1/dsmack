@@ -29,5 +29,9 @@
       "https://sepolia.base.org",
       "https://base-sepolia-rpc.publicnode.com"
     ]
+  },
+  "nearAttestation": {
+    "gatewayComposeHashes": [],
+    "modelComposeHashes": []
   }
 }

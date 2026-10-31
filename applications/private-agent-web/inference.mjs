@@ -141,12 +141,13 @@ export function brokerStream(
             ...(options.artifactId ? { artifactId: options.artifactId } : {}) }),
           { signal: options.signal },
         );
-        const checked = checkEvidence(
+        const checked = await checkEvidence(
           session.attestation,
           model.id,
           started,
           attestationNonce,
           session.modelPublicKey,
+          cfg.nearAttestation,
         );
         require(
           /^[0-9a-f]{32}$/.test(session.sessionId),

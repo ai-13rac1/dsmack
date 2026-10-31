@@ -4,6 +4,7 @@ import { HeaderReceiver } from "./email-receiver/receiver.mjs";
 const emailHeaders = new HeaderReceiver();
 const root = new URL("./dist/", import.meta.url);
 const types: Record<string, string> = {
+  tar: "application/x-tar",
   html: "text/html; charset=utf-8",
   js: "text/javascript; charset=utf-8",
   mjs: "text/javascript; charset=utf-8",
@@ -17,7 +18,7 @@ const types: Record<string, string> = {
 };
 const security = {
   "content-security-policy":
-    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src https://artifacts.private-agent.dstack.soc1024.com; connect-src 'self' https://mainnet.base.org https://base-rpc.publicnode.com https://pod.dstack.soc1024.com https://sepolia.base.org https://base-sepolia-rpc.publicnode.com https://base-sepolia.drpc.org https://base-sepolia.gateway.tenderly.co wss://*.trycloudflare.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; frame-src https://artifacts.private-agent.dstack.soc1024.com; connect-src 'self' https://cloud.near.ai https://nras.attestation.nvidia.com https://mainnet.base.org https://base-rpc.publicnode.com https://pod.dstack.soc1024.com https://sepolia.base.org https://base-sepolia-rpc.publicnode.com https://base-sepolia.drpc.org https://base-sepolia.gateway.tenderly.co wss://*.trycloudflare.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
   "cache-control": "no-store",

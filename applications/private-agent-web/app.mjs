@@ -1,3 +1,4 @@
+import { checkPageVersion } from "./page-version.mjs";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { renderToolProgress } from "./tool-renderers.mjs";
 import { AgentInterface } from "@pi-components/components/AgentInterface.js";
@@ -231,7 +232,7 @@ async function usage() {
   }
 }
 function renderEvidence(e) {
-  if (e.type !== "guest-run") $("verified").hidden = false;
+  if (e.type !== "guest-run") $("verified").hidden = e.browser?.fullQuoteVerifiedBy !== "browser";
   $("attestations").replaceChildren();
   details($("attestations"), "Latest verification details", e);
 }
@@ -1029,6 +1030,13 @@ async function main() {
   const response = await startupStep("configuration", () => fetch("./config.json", { cache: "no-store" }));
   require(response.ok, "Page configuration could not load.");
   cfg = await response.json();
+  const checkVersion = () => checkPageVersion({ ownCID: document.querySelector('meta[name="page-bundle-cid"]').content,
+    config: cfg.pageBundleRegistry, banner: $("page-version") }).catch(e => {
+      $("page-version").hidden = false;
+      $("page-version").textContent = "Page version check failed: " + e.message;
+    });
+  void checkVersion();
+  setInterval(checkVersion, 60000);
   sharedLink = parseArtifactLink(window.location.href);
   for (const name of ["broker", "rpc"]) {
     require(/^https:\/\//.test(cfg[name]), `${name} must be an explicit HTTPS service address.`);
