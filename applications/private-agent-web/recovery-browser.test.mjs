@@ -38,7 +38,9 @@ try {
     await backend(page, 'ux');
     let pending = null, dk, cancels = 0;
     await page.route('**/continuity/email/*', async route => {
-      const action = new URL(route.request().url()).pathname.split('/').at(-1);
+      const path = new URL(route.request().url()).pathname;
+      const action = path.split('/').at(-1);
+      assert.equal(path, new URL('continuity/email/'+action, base).pathname, 'recovery controls stay scoped to the page project path');
       assert(['status', 'cancel'].includes(action), 'only recovery controls are used by the existing device');
       const body = route.request().postDataJSON(); calls.push({ action, ...body });
       assert.equal(body.auth, (await recoveryControl(dk, action, body.id, body.ts)).auth, 'control request authenticates the saved DK');

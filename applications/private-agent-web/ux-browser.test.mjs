@@ -12,7 +12,7 @@ await mkdir(evidence, { recursive: true });
 const tls = await mkdtemp(resolve(evidence, 'tls-'));
 const keyPath = resolve(tls, 'key.pem'), certPath = resolve(tls, 'cert.pem');
 await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-keyout', keyPath, '-out', certPath]);
-import { model } from './test-fixtures/near.mjs';
+import { model, policy } from './test-fixtures/near.mjs';
 function encrypt(text, publicKey) {
   const ephemeral = Wallet.createRandom(), nonce = randomBytes(12);
   const point = Buffer.from(new SigningKey(ephemeral.privateKey).computeSharedSecret('0x04' + publicKey).slice(2), 'hex');
@@ -57,7 +57,7 @@ const { backend, ready, send, publicHeaders } = await import('./test-fixtures/br
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const results = [];
 try {
-  for (const width of [390, 1280]) for (const scenario of ['cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy']) {
+  for (const width of [390, 1280]) for (const scenario of ['cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy', 'local-only']) {
     mode = scenario; turns = 0;
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width, height: 900 } });
     const page = await context.newPage(), errors = [], logs = [];
@@ -66,6 +66,13 @@ try {
     page.on('console', msg => logs.push(msg.type() + ': ' + msg.text()));
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : route.abort());
     const calls = await backend(page, 'ux');
+    if (scenario === 'local-only') {
+      const localConfig = await (await page.request.get(new URL('config.json', base).href)).json();
+      localConfig.broker = new URL('/relay-broker', base).href;
+      localConfig.nearAttestation = policy;
+      delete localConfig.syncAnchor; delete localConfig.syncAnchorCodeHash;
+      await page.route('**/config.json', route => route.fulfill({headers:publicHeaders,body:JSON.stringify(localConfig)}));
+    }
     const pendingSync = [];
     let holdUsage = scenario === 'cancel-billing', pendingUsage = 0, observedUsage;
     let usageStarted = new Promise(resolve => observedUsage = resolve);
@@ -127,6 +134,15 @@ try {
         }
         assert(closedStreams > 0);
         assert(pendingSync.length > 0, "cancel, retry and send finish while remote sync is stalled");
+      } else if (scenario === 'local-only') {
+        await waitIdle();
+        await page.waitForFunction(() => document.querySelector('#chat').dataset.saved === 'true');
+        await page.locator('#sync-status').getByText('Chats save on this device.',{exact:true}).waitFor({state:'attached'});
+        assert(await page.locator('#alert').isHidden());
+        await ready(page);
+        await page.locator('user-message').getByText('Please inspect my code.',{exact:true}).waitFor();
+        assert(await page.locator('#alert').isHidden());
+        assert(!calls.some(call=>call.path.startsWith('/sync/')),'local-only chats never request chain sync');
       } else if (['empty', 'busy'].includes(scenario)) {
         await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /No Mac is free/).waitFor();
         assert.doesNotMatch(await page.locator('#capacity-status').innerText(), /FLEET_BUSY|broker|Busy,/);

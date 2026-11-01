@@ -417,7 +417,7 @@ async function recoverArtifactGuests() {
     const snapshot = { state: { messages: saved.messages, model: saved.model, thinkingLevel: saved.thinkingLevel } };
     const state = new ArtifactState({ dataKey: keys.bundle.dk,
       getRecord: async scope => (await storage.sessions.get(saved.id))?.dsmack?.artifactState?.[scope],
-      saveRecord: async (scope, envelope) => { await persistSession(saved, snapshot, {scope,envelope}); try { await sync.push(saved.id); } catch(e) { error(e); } },
+      saveRecord: async (scope, envelope) => { await persistSession(saved, snapshot, {scope,envelope}); if (sync) try { await sync.push(saved.id); } catch(e) { error(e); } },
     });
     const service = await appArtifactGuests(saved, state), record = service.records.get(entry.id);
     if (record) showTask(record, service);
@@ -497,7 +497,7 @@ async function useSession(data) {
       const task = persistSession(artifactSession, artifactAgent, { scope, envelope });
       lastSave = task;
       await task;
-      try { await sync.push(artifactSession.id); }
+      if (sync) try { await sync.push(artifactSession.id); }
       catch (e) { error(e); }
     };
     const artifactState = new ArtifactState({ dataKey: keys.bundle.dk,
@@ -511,7 +511,7 @@ async function useSession(data) {
         const task = persistSession(artifactSession, artifactAgent);
         lastSave = task;
         await task;
-        try { await sync.push(artifactSession.id); } catch (e) { error(e); }
+        if (sync) try { await sync.push(artifactSession.id); } catch (e) { error(e); }
       },
       changed: scope => artifacts?.refreshBudget(scope).catch(error),
     });
@@ -646,7 +646,7 @@ async function loadSharedViewer() {
 async function initChat() {
   storage = createChatStorage();
   persistSession = createSessionPersistence({ storage, save: saveChat });
-  if (keys.bundle) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
+  if (keys.bundle && cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
   chat = new AgentInterface();
   chat.id = "chat";
   // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
@@ -1011,7 +1011,7 @@ async function refund() {
   $("prepaid-status").textContent = await credit.closeAccount();
 }
 async function checkSync() {
-  if (!sync) { $("sync-status").textContent = "Choose how to begin. Chats save on this device."; return; }
+  if (!sync) { $("sync-status").textContent = keys.bundle ? "Chats save on this device." : "Choose how to begin. Chats save on this device."; return; }
   const checking = sync;
   $("sync-status").textContent = "Checking sync… Your saved chats are ready on this device.";
   try {
@@ -1068,8 +1068,8 @@ async function main() {
   }
   credit = await startupStep("local-credit", () => new Credit(cfg, client, render).init());
   continuity = continuityUI({ keys, credit, cfg, api, error, beforeExport: async () => {
-    require(sync, "Start fresh or recover your wallet first.");
-    await sync.flush();
+    require(keys.bundle, "Start fresh or recover your wallet first.");
+    if (sync) await sync.flush();
   } });
   render();
   await startupStep("local-chat", initChat);
@@ -1078,7 +1078,7 @@ async function main() {
     await keys.create();
     await credit.init();
     currentSession.dsmack.wallet = credit.address.toLowerCase();
-    sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
+    if (cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
     if (!await loadSharedViewer()) await useSession(currentSession);
     render();
     $("welcome").hidden = true;
