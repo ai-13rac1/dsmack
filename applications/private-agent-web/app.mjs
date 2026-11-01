@@ -549,6 +549,16 @@ async function useSession(data) {
     getApiKey: () => undefined,
     streamFn: brokerStream({
       credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error,
+      billingUpdated: async answer => {
+        const reply = artifactAgent.state.messages.findLast(message => message.role === "assistant" &&
+          message.billing?.sessionId === answer.billing.sessionId);
+        if (!reply) return;
+        reply.billing = { ...answer.billing };
+        reply.usage = structuredClone(answer.usage);
+        lastSave = persistSession(sessionRecord, artifactAgent);
+        await lastSave;
+        if (currentSession === sessionRecord) { chat.requestUpdate(); renderReplyRecovery(); }
+      },
       preflight: (context, signal) => guest.preflight(context, signal, policy.manifest),
       startedAt: currentSession.createdAt,
       systemPrompt: ({ checked, runtime }) => buildAgentPrompt({
@@ -671,6 +681,7 @@ async function initChat() {
     await credit.checkBroker(api);
     require(quote?.configured, "Private inference is not configured on this broker.");
     await ensureWallet();
+    if (credit.chatCredit.pendingInferenceId) await usage();
     require(!credit.chatCredit.pendingInferenceId,
       "Usage is unresolved. Reconcile provider usage before sending another message.");
     require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,

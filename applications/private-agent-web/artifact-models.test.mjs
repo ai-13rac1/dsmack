@@ -165,6 +165,40 @@ test('main-chat and artifact inference share one wallet lock through usage recon
   assert.equal(f.calls.length,2);assert.equal(chat.stopReason,'stop');
 });
 
+test('cancel finishes the reply before pending billing while the wallet lock holds the next dispatch', {timeout:5000}, async()=>{
+  const f=await fixture(),abort=new AbortController();
+  let releaseUsage,usageStarted,savedBilling;
+  const settlement=new Promise(resolve=>releaseUsage=resolve),started=new Promise(resolve=>usageStarted=resolve);
+  const api=async(path,body,options)=>{
+    const response=await f.api(path,body,options);
+    if(path!=='/inference/chat'||f.calls.length!==1)return response;
+    const partial=(await response.text()).split('\n\n')[0]+'\n\n';
+    return new Response(new ReadableStream({start(controller){
+      controller.enqueue(new TextEncoder().encode(partial));
+      options.signal.addEventListener('abort',()=>controller.error(new DOMException('Request aborted','AbortError')),{once:true});
+    }}),{headers:{'content-type':'text/event-stream'}});
+  };
+  const run=brokerStream({...f.options,api,startedAt:Date.now(),error:()=>{},
+    usage:async()=>{usageStarted();await settlement;return f.usage();},
+    billingUpdated:async answer=>{savedBilling=structuredClone(answer.billing);}});
+  const first=run({id:model},{messages:[{role:'user',content:'first'}]},{signal:abort.signal});
+  for await(const event of first)if(event.type==='text_delta')break;
+  abort.abort();
+  const cancelled=await first.result();
+  assert.equal(cancelled.stopReason,'aborted');assert.equal(cancelled.billing.settled,false);
+  assert(BigInt(cancelled.billing.reservedNanoUsd)>0n);
+  await started;
+  const second=run({id:model},{messages:[{role:'user',content:'second'}]});
+  await new Promise(setImmediate);
+  assert.equal(f.calls.length,1,'next request cannot dispatch against the unresolved reservation');
+  releaseUsage();
+  const reply=await second.result();
+  assert.equal(reply.stopReason,'stop');assert.equal(f.calls.length,2);
+  assert.equal(savedBilling.sessionId,cancelled.billing.sessionId);
+  assert.equal(savedBilling.settled,true);assert.equal(savedBilling.costNanoUsd,'300000');
+  assert.equal(reply.billing.costNanoUsd,'300000');
+});
+
 test('a failed durable reservation prevents provider dispatch',async()=>{
   const f=await fixture({failSaveAt:3});await f.models.grant(scope,'20000000');
   await assert.rejects(f.models.complete(scope,{messages:[{role:'user',content:'hello'}]}),/disk save failed/);

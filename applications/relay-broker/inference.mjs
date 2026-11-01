@@ -518,13 +518,15 @@ export class Inference {
       session.attestation.transport?.close?.();
       throw error;
     }
-    const inference = this, decoder = new TextDecoder();
-    let disconnected = false, upstreamDone = false;
+    const inference = this, decoder = new TextDecoder(), providerReader = response.body.getReader();
+    let disconnected = false, upstreamDone = false, providerCancelled = Promise.resolve();
     const stream = new ReadableStream({
       async start(controller) {
         let buffer = "", tokens = null, done = false, failure = false;
         try {
-          for await (const chunk of response.body) {
+          for (;;) {
+            const { value: chunk, done: sourceDone } = await providerReader.read();
+            if (sourceDone) break;
             buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(
               /\r\n/g,
               "\n",
@@ -565,9 +567,11 @@ export class Inference {
             "encrypted provider stream ended before completion",
             502,
           );
-        } catch {
+        } catch (error) {
           failure = true;
+          if (!disconnected) providerCancelled = providerReader.cancel(error);
         } finally {
+          try { await providerCancelled; } catch { failure = true; }
           session.attestation.transport?.close?.();
           inference.sessions.delete(r.sessionId);
           try {
@@ -592,6 +596,7 @@ export class Inference {
             failure = true;
           }
           upstreamDone = true;
+          providerReader.releaseLock();
           if (disconnected) inference.activeRequests.delete(localId);
           if (!disconnected) {
             if (failure) {
@@ -606,12 +611,16 @@ export class Inference {
           }
         }
       },
-      cancel() {
+      async cancel(reason) {
         disconnected = true;
+        if (!upstreamDone) {
+          providerCancelled = providerReader.cancel(reason);
+          await providerCancelled;
+        }
       },
     });
     // Keep queued ciphertext counted until the HTTP consumer reaches EOF.
-    // A disconnected browser still leaves its provider drain counted above.
+    // Cancellation stays counted until the provider reader has stopped above.
     const reader = stream.getReader();
     let consumerCancelled = false;
     const tracked = new ReadableStream({

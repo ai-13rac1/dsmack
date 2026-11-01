@@ -30,7 +30,7 @@ const server = createServer({ key: await readFile(keyPath), cert: await readFile
       turns++;
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
       const frame = delta => res.write('data: ' + JSON.stringify({ model, choices: [{ delta }] }) + '\n\n');
-      if (mode === 'cancel' && turns === 1) {
+      if (['cancel', 'cancel-billing'].includes(mode) && turns === 1) {
         frame({ content: encrypt('Reply in progress…', publicKey) });
         res.on('close', () => closedStreams++); return;
       }
@@ -57,7 +57,7 @@ const { backend, ready, send, publicHeaders } = await import('./test-fixtures/br
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const results = [];
 try {
-  for (const width of [390, 1280]) for (const scenario of ['cancel', 'guest', 'orphan', 'empty', 'busy']) {
+  for (const width of [390, 1280]) for (const scenario of ['cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy']) {
     mode = scenario; turns = 0;
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width, height: 900 } });
     const page = await context.newPage(), errors = [], logs = [];
@@ -67,7 +67,17 @@ try {
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : route.abort());
     const calls = await backend(page, 'ux');
     const pendingSync = [];
-    if (scenario === 'cancel') await page.route('**/relay-broker/sync/blob', route => { pendingSync.push(route); });
+    let holdUsage = scenario === 'cancel-billing', pendingUsage = 0, observedUsage;
+    let usageStarted = new Promise(resolve => observedUsage = resolve);
+    if (['cancel', 'cancel-billing'].includes(scenario)) {
+      await page.route('**/relay-broker/sync/blob', route => { pendingSync.push(route); });
+      await page.route('**/relay-broker/inference/usage', route => {
+        if (!holdUsage) return route.fallback();
+        pendingUsage++;
+        observedUsage();
+        return route.fulfill({status:409,headers:publicHeaders,body:JSON.stringify({error:{code:'USAGE_PENDING',message:'Provider cost accounting is pending'}})});
+      });
+    }
     try {
       await ready(page); await page.locator('#start-fresh').click();
       await page.waitForFunction(() => !!document.querySelector('#chat-credit').dataset.remainingNanoUsd);
@@ -90,14 +100,32 @@ try {
       await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') || document.querySelector('#chat').session.state.isStreaming);
       const waitIdle = () => page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming);
       const cancel = () => page.locator('message-editor').getByRole('button', { name: /abort|cancel|stop/i }).click();
-      if (scenario === 'cancel') {
+      if (['cancel', 'cancel-billing'].includes(scenario)) {
         await page.getByText('Reply in progress…', { exact: true }).waitFor();
-        await cancel(); await waitIdle(); await page.locator('#retry-reply').click();
-        await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2 && !document.querySelector('#chat').session.state.isStreaming);
-        assert.equal(await page.locator('user-message').count(), 1);
-        await send(page, 'A fresh message after cancelling.');
-        await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 3 && !document.querySelector('#chat').session.state.isStreaming);
-        assert.equal(turns, 3); assert(closedStreams > 0);
+        await cancel(); await waitIdle();
+        if (scenario === 'cancel-billing') {
+          await usageStarted;
+          assert(pendingUsage>0,'composer becomes idle while provider billing remains pending');
+          const cancelled=await page.evaluate(()=>document.querySelector('#chat').session.state.messages.find(m=>m.stopReason==='aborted'));
+          assert.equal(cancelled.billing.settled,false);
+          assert(BigInt(cancelled.billing.reservedNanoUsd)>0n);
+          usageStarted=new Promise(resolve=>observedUsage=resolve);
+          await send(page,'A fresh message while the cancelled charge settles.');
+          await usageStarted;
+          assert.equal(turns,1,'pending provider billing cannot dispatch another model request');
+          holdUsage=false;
+          await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2 && !document.querySelector('#chat').session.state.isStreaming);
+          assert.equal(turns,2);
+          assert.equal(await page.locator('user-message').count(),2);
+        } else {
+          await page.locator('#retry-reply').click();
+          await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2 && !document.querySelector('#chat').session.state.isStreaming);
+          assert.equal(await page.locator('user-message').count(), 1);
+          await send(page, 'A fresh message after cancelling.');
+          await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 3 && !document.querySelector('#chat').session.state.isStreaming);
+          assert.equal(turns, 3);
+        }
+        assert(closedStreams > 0);
         assert(pendingSync.length > 0, "cancel, retry and send finish while remote sync is stalled");
       } else if (['empty', 'busy'].includes(scenario)) {
         await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /No Mac is free/).waitFor();

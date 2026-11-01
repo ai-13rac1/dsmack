@@ -53,7 +53,7 @@ export function withInferenceWallet(credit, operation) {
 }
 
 export function brokerStream(
-  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt, preflight },
+  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt, preflight, billingUpdated },
 ) {
   const conversationStarted = new Date(startedAt);
   return (model, context, options = {}) => {
@@ -74,6 +74,19 @@ export function brokerStream(
       },
       stopReason: "stop",
       timestamp: Date.now(),
+    };
+    const finish = () => {
+      if (stream.done) return;
+      stream.push(answer.stopReason === "error" || answer.stopReason === "aborted"
+        ? { type: "error", reason: answer.stopReason, error: answer }
+        : { type: "done", reason: answer.stopReason, message: answer });
+      stream.end(answer);
+    };
+    const cancelled = () => {
+      answer.stopReason = "aborted";
+      answer.failure = replyFailure(new DOMException("Request aborted", "AbortError"));
+      answer.errorMessage = answer.failure.message;
+      finish();
     };
     withInferenceWallet(credit, async () => {
       let session;
@@ -242,6 +255,7 @@ export function brokerStream(
         await options.onReserve?.({ ...billing });
         require(!options.signal?.aborted, "Inference request was aborted.");
         billing.dispatched = true;
+        options.signal?.addEventListener("abort", cancelled, { once: true });
         credit.chatCredit.pendingInferenceId = "awaiting-provider-response";
         const response = await api("/inference/chat", signed, {
           stream: true,
@@ -343,16 +357,15 @@ export function brokerStream(
         answer.errorCode ||= e.code;
         reportError(Object.assign(new Error(answer.failure.message), { replyFailure: answer.failure }));
       }
+      if (stream.done) await billingUpdated?.(answer);
     }).catch(e => {
       answer.stopReason = options.signal?.aborted ? "aborted" : "error";
       answer.failure = replyFailure(e, { partial: answer.content.some(part => part.type === "text" && part.text) });
       answer.errorMessage = (answer.failure.interrupted ? "Interrupted · " : "") + answer.failure.message;
       error?.(Object.assign(new Error(answer.failure.message), { replyFailure: answer.failure }));
     }).finally(() => {
-      stream.push(answer.stopReason === "error" || answer.stopReason === "aborted"
-        ? { type: "error", reason: answer.stopReason, error: answer }
-        : { type: "done", reason: answer.stopReason, message: answer });
-      stream.end(answer);
+      options.signal?.removeEventListener("abort", cancelled);
+      finish();
     });
     return stream;
   };

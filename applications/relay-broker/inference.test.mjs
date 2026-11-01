@@ -405,11 +405,12 @@ test("unknown dispatched requests remain reserved across restart and are never r
   );
 });
 
-test("browser disconnect still drains the encrypted provider stream for billing evidence", async () => {
+test("browser cancellation stops provider generation and settles its exact partial charge once", async () => {
   const f = fixture();
   await f.credit();
-  let finishSource, responded;
-  const gate = new Promise((resolve) => finishSource = resolve),
+  let finishCancellation, cancellationStarted, responded, providerCalls = 0;
+  const cancellation = new Promise(resolve => finishCancellation = resolve),
+    started = new Promise(resolve => cancellationStarted = resolve),
     stored = new Promise((resolve) => responded = resolve);
   const save = f.payments.save;
   f.payments.save = async (next) => {
@@ -420,21 +421,16 @@ test("browser disconnect still drains the encrypted provider stream for billing 
       )
     ) responded();
   };
-  f.provider.chatEncrypted = async () =>
-    new Response(
+  f.provider.chatEncrypted = async () => {
+    providerCalls++;
+    return new Response(
       new ReadableStream({
-        async start(controller) {
+        start(controller) {
           controller.enqueue(
             new TextEncoder().encode('data: {"choices":[]}\n\n'),
           );
-          await gate;
-          controller.enqueue(
-            new TextEncoder().encode(
-              'data: {"usage":{"total_tokens":12}}\n\ndata: [DONE]\n\n',
-            ),
-          );
-          controller.close();
         },
+        async cancel() { cancellationStarted(); await cancellation; },
       }),
       {
         headers: {
@@ -443,21 +439,44 @@ test("browser disconnect still drains the encrypted provider stream for billing 
         },
       },
     );
+  };
   const response = await f.send();
   assert.equal(f.inference.status().inFlightStreams, 1);
   const consumer = response.body.getReader();
   await consumer.read();
   const pendingRead = consumer.read();
-  await consumer.cancel();
+  const stopped = consumer.cancel();
+  await started;
   await pendingRead;
-  assert.equal(f.inference.status().inFlightStreams, 1, "disconnected browser still has a metered provider stream");
-  finishSource();
+  assert.equal(f.inference.status().inFlightStreams, 1, "deploy guard waits until upstream cancellation is confirmed");
+  finishCancellation();
+  await stopped;
   await stored;
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(f.inference.status().inFlightStreams, 0);
+  const request = Object.values(f.saved().inferenceRequests)[0];
+  assert.equal(request.inferenceId, "inference-disconnected");
+  assert.equal(request.interrupted, true);
+  assert.equal(request.usedTokens, null);
+  f.cost("0");
+  await assert.rejects(f.inference.usage(await f.signed("usage")), code("USAGE_PENDING"));
+  assert(BigInt(f.inference.summary(f.wallet.address.toLowerCase()).reservedNanoUsd) > 0n);
+  await assert.rejects(f.prepare(), code("REQUEST_IN_FLIGHT"));
+  const costs = f.provider.costs;
+  f.provider.costs = async args => {
+    assert.deepEqual(args.requestIds, ["inference-disconnected"]);
+    return costs(args);
+  };
+  f.cost("300");
   const result = await f.inference.usage(await f.signed("usage"));
   assert.equal(result.spentNanoUsd, "300");
-  assert.equal(result.usedTokens, "12");
+  assert.equal(result.usedTokens, "0");
+  assert.equal(result.unreportedTokenRequests, 1);
+  assert.equal(result.reservedNanoUsd, "0");
+  assert.equal((await f.inference.usage(await f.signed("usage"))).spentNanoUsd, "300");
+  assert.equal(f.costsCalls(), 2);
+  assert.equal(providerCalls, 1, "cancellation and reconciliation never redispatch provider work");
+  await f.prepare();
 });
 
 test("provider billing IDs cannot charge a different wallet and missing token evidence stays pending", async () => {
