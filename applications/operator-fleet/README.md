@@ -13,6 +13,10 @@ Build on a Linux development host using the private-agent page's existing instal
 WEB_NODE_MODULES=/absolute/path/to/private-agent-web/node_modules node build.mjs
 ```
 
+Set `FLEET_CONFIG=/absolute/path/to/public-config.json` to build with a separate
+broker and escrow configuration. The staging agent-page build supplies its own
+generated configuration for the included fleet page.
+
 Serve `dist/` directly, or copy it into `fleet/` in the friends' IPFS page before
 adding and publishing that static directory with the existing Mac Kubo service.
 All assets are relative to the page. `config.json` contains the public broker,

@@ -52,7 +52,10 @@ await writeFile(resolve(app, "dist/index.html"), html);
 // The public network view is dependency-free and shares this IPFS release.
 const { copyDashboard } = await import("../network-dashboard/build.mjs");
 await copyDashboard(resolve(app, "dist/network"));
-await import("../operator-fleet/build.mjs");
+execFileSync(process.execPath, [resolve(app, "../operator-fleet/build.mjs")], {
+  env: { ...process.env, ...(process.env.PAGE_TARGET === "staging" ? { FLEET_CONFIG: resolve(app, "dist/config.json") } : {}) },
+  stdio: "inherit",
+});
 await cp(resolve(app, "../operator-fleet/dist"), resolve(app, "dist/fleet"), { recursive: true });
 
 execFileSync("python3", [resolve(app, "bundle.py"), resolve(app, "dist")], { stdio: "inherit" });
