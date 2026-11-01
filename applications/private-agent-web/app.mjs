@@ -1032,13 +1032,15 @@ async function main() {
   const response = await startupStep("configuration", () => fetch("./config.json", { cache: "no-store" }));
   require(response.ok, "Page configuration could not load.");
   cfg = await response.json();
-  const checkVersion = () => checkPageVersion({ ownCID: document.querySelector('meta[name="page-bundle-cid"]').content,
-    config: cfg.pageBundleRegistry, banner: $("page-version") }).catch(e => {
-      $("page-version").hidden = false;
-      $("page-version").textContent = "Page version check failed: " + e.message;
-    });
-  void checkVersion();
-  setInterval(checkVersion, 60000);
+  if (cfg.pageBundleRegistry) {
+    const checkVersion = () => checkPageVersion({ ownCID: document.querySelector('meta[name="page-bundle-cid"]').content,
+      config: cfg.pageBundleRegistry, banner: $("page-version") }).catch(e => {
+        $("page-version").hidden = false;
+        $("page-version").textContent = "Page version check failed: " + e.message;
+      });
+    void checkVersion();
+    setInterval(checkVersion, 60000);
+  }
   sharedLink = parseArtifactLink(window.location.href);
   for (const name of ["broker", "rpc"]) {
     require(/^https:\/\//.test(cfg[name]), `${name} must be an explicit HTTPS service address.`);
