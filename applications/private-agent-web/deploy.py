@@ -183,9 +183,11 @@ def main():
         # Publish only after the new page is served; failed transactions propagate.
         subprocess.run(["cast", "send", "--rpc-url", registry["rpcs"][0], "--chain", "84532",
                         "--account", args.registry_account, registry["registry"], "publish(string)", own_cid], check=True)
+        read_env = {key: value for key, value in os.environ.items()
+                    if key not in {"ETH_PASSWORD", "ETH_KEYSTORE", "ETH_KEYSTORE_ACCOUNT"}}
         for rpc in registry["rpcs"]:
             published = subprocess.check_output(["cast", "call", "--rpc-url", rpc, "--chain", "84532",
-                                               registry["registry"], "latestCID()(string)"], text=True).strip().strip('"')
+                                               registry["registry"], "latestCID()(string)"], text=True, env=read_env).strip().strip('"')
             if published != own_cid:
                 raise ValueError("Published bundle CID differs from deployed page")
     summary = {"bundleCID": own_cid, "registry": registry["registry"] if registry else None, "url": (staging_page_url(args.staging_origin) if args.target == "staging" else base + "/private-agent/"), "runtime": project["runtime"],

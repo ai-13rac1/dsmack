@@ -186,6 +186,45 @@ class SourceGateTests(unittest.TestCase):
                 page.main()
             token.assert_not_called()
 
+    def test_registry_readback_does_not_inherit_signing_keystore_options(self):
+        page=load('page_deploy_readback', ROOT/'applications/private-agent-web/deploy.py')
+        own='bafkrei'+'a'*52
+        wallet_options=dict(ETH_PASSWORD='/fixture/password-file', ETH_KEYSTORE='/fixture/keystore', ETH_KEYSTORE_ACCOUNT='publisher')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'index.html').write_text('page')
+            (root/'config.json').write_text(json.dumps(dict(
+                pageBundleRegistry=dict(registry='0x'+'11'*20, rpcs=['https://rpc-a.invalid', 'https://rpc-b.invalid']),
+                nearAttestation=dict(gatewayComposeHashes=['a'*64], modelComposeHashes=['b'*64]))))
+            page_env=root/'page-env.json'; page_env.write_text('{"EMAIL_RECOVERY_ADDRESS":"recovery@example.invalid"}')
+            class Opener:
+                def open(self, request, timeout):
+                    if request.full_url.endswith('/_api/substrate'):
+                        return io.BytesIO(b'{"isolation_modes":["shared"]}')
+                    if request.full_url.endswith('/_api/projects'):
+                        return io.BytesIO(b'{"runtime":"deno","isolation":"shared","mode":"attested"}')
+                    return io.BytesIO(b'page')
+            def read_registry(command, *, text, env):
+                self.assertEqual(command[:2], ['cast', 'call'])
+                self.assertFalse(set(wallet_options) & env.keys())
+                self.assertEqual(env['RPC_ENV_MARKER'], 'retained')
+                self.assertEqual(page.os.environ['ETH_PASSWORD'], wallet_options['ETH_PASSWORD'])
+                return '"'+own+'"'
+            with patch('sys.argv', ['deploy.py', '--target', 'staging', '--registry-account', 'publisher',
+                                    '--dist', str(root), '--page-env', str(page_env),
+                                    '--operator-token-sha256', 'a'*64, '--evidence', str(root/'evidence')]), \
+                 patch.dict(page.os.environ, {**wallet_options, 'RPC_ENV_MARKER':'retained'}), \
+                 patch.object(page, 'source_ref', return_value='test-commit'), patch.object(page, 'token', return_value='fixture-only'), \
+                 patch.object(page, 'check_bundle', return_value=own), patch.object(page, 'package', return_value=b'archive'), \
+                 patch.object(page, 'build_opener', return_value=Opener()), patch.object(page, 'wait_for_idle'), \
+                 patch.object(page.subprocess, 'check_output', side_effect=read_registry) as reads, \
+                 patch.object(page.subprocess, 'run') as send:
+                page.main()
+            send.assert_called_once()
+            self.assertEqual(send.call_args.args[0][:2], ['cast', 'send'])
+            self.assertNotIn('env', send.call_args.kwargs)
+            self.assertEqual(reads.call_count, 2)
+
 
 if __name__ == '__main__':
     unittest.main()
