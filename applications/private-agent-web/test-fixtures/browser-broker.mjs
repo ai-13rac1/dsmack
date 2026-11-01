@@ -25,6 +25,7 @@ export async function backend(page, kind) {
     .json();
   if (kind === "ux") cfg.broker = new URL("/relay-broker", base).href;
   cfg.nearAttestation = policy;
+  cfg.syncAnchor = "0x" + "11".repeat(20);
   cfg.syncAnchorCodeHash = keccak256("0x6000");
   await page.route("**/config.json", route => route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));
   await page.route(cfg.rpc, route => {
