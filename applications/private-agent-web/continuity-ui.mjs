@@ -77,7 +77,7 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
     await keys.recoverPasskey({ api });
     location.reload();
   });
-  const emailGate = createEmailGate({ base: new URL(".", location.href).pathname.replace(/\/$/, ""), policy: cfg.emailGate });
+  const emailGate = createEmailGate({ base: new URL(".", location.href).pathname.replace(/(?:\/a)?\/$/, ""), policy: cfg.emailGate });
   const stopRecoveryNotice = watchRecovery({ gate: emailGate, getBundle: () => keys.bundle });
   const showPending = (pending) => {
     $("continuity-panel").hidden = false;

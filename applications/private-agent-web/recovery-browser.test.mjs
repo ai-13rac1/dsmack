@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { recoveryControl } from './email-gate-crypto.mjs';
+import { sealArtifact } from './artifact-share.mjs';
 const evidence = resolve(process.env.EVIDENCE || 'local-data/recovery');
 await mkdir(evidence, { recursive: true });
 const tls = await mkdtemp(resolve(evidence, 'tls-'));
@@ -14,7 +15,7 @@ await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-n
 const server = createServer({ key: await readFile(keyPath), cert: await readFile(certPath) }, async (req, res) => {
   try {
     assert.equal(req.method, 'GET');
-    const path = new URL(req.url, 'http://local').pathname.replace(/^\/private-agent\//, '') || 'index.html';
+    const path = new URL(req.url, 'http://local').pathname.replace(/^\/private-agent\//, '').replace(/^\/?a\//, '') || 'index.html';
     const file = resolve('dist', path); assert(file.startsWith(resolve('dist') + '/'));
     const data = await readFile(file);
     res.writeHead(200, { 'content-type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json' })[extname(file)] });
@@ -36,11 +37,11 @@ try {
     page.on('console', msg => logs.push(msg.type() + ': ' + msg.text()));
     await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : route.abort());
     await backend(page, 'ux');
-    let pending = null, dk, cancels = 0;
+    let pending = null, dk, cancels = 0, recoveryBase = new URL(base).pathname.replace(/\/$/, '');
     await page.route('**/continuity/email/*', async route => {
       const path = new URL(route.request().url()).pathname;
       const action = path.split('/').at(-1);
-      assert.equal(path, new URL('continuity/email/'+action, base).pathname, 'recovery controls stay scoped to the page project path');
+      assert.equal(path, recoveryBase+'/continuity/email/'+action, 'recovery controls stay scoped to the page project path');
       assert(['status', 'cancel'].includes(action), 'only recovery controls are used by the existing device');
       const body = route.request().postDataJSON(); calls.push({ action, ...body });
       assert.equal(body.auth, (await recoveryControl(dk, action, body.id, body.ts)).auth, 'control request authenticates the saved DK');
@@ -77,6 +78,20 @@ try {
       await page.locator('#cancel-email-recovery').click();
       await notice.getByText(/Email recovery cancelled/).waitFor();
       assert.equal(cancels, 2, 'returning to the tab discovers a new request');
+      const shared = await sealArtifact('<!doctype html><p>Recovery routing check</p>');
+      await page.route('**/relay-broker/artifacts/share/'+shared.cid, route => route.fulfill({
+        contentType:'application/json',body:JSON.stringify({cid:shared.cid,ciphertext:shared.ciphertext})}));
+      for (const sharedUrl of [new URL('a/',base),new URL('/a/',base)]) {
+        recoveryBase = sharedUrl.pathname === '/a/' ? '' : '/private-agent';
+        sharedUrl.hash = new URLSearchParams({cid:shared.cid,k:shared.key}).toString();
+        const before = calls.length;
+        await page.goto(sharedUrl.href);
+        await page.waitForFunction(() => document.documentElement.dataset.ready === 'true');
+        await page.waitForFunction(() => document.querySelector('#email-recovery-notice').hidden);
+        assert(calls.length>before, 'shared app checks recovery at its owning page path');
+      }
+      recoveryBase = '/private-agent';
+      await ready(page);
       // A new browser retains its ephemeral private key and pending request
       // in IndexedDB across reload, without creating a wallet during the wait.
       await page.evaluate(async () => {
