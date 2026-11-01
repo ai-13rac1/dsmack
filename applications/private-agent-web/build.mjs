@@ -33,8 +33,10 @@ await build({
 await copyFile(resolve(app, "style.css"), resolve(app, "dist/style.css"));
 const config = JSON.parse(await readFile(process.env.PAGE_CONFIG || resolve(app, "config.json"), "utf8"));
 if (process.env.PAGE_TARGET === "staging") {
+  const origin = process.env.PAGE_STAGING_ORIGIN || "https://private-agent-staging.dstack.soc1024.com";
+  if (!["https://private-agent-staging.dstack.soc1024.com", "https://pod.dstack.soc1024.com"].includes(origin)) throw new Error("PAGE_STAGING_ORIGIN must be the staging hostname or webhost");
   config.broker = "https://pod.dstack.soc1024.com/relay-broker-staging";
-  config.tunnels = "https://private-agent-staging.dstack.soc1024.com/tunnels";
+  config.tunnels = origin + (origin === "https://pod.dstack.soc1024.com" ? "/private-agent-staging/tunnels" : "/tunnels");
 }
 await writeFile(resolve(app, "dist/config.json"), JSON.stringify(config));
 await copyFile(resolve(pi, "app.css"), resolve(app, "dist/pi.css"));

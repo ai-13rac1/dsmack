@@ -105,6 +105,10 @@ preparation and deployment require clean source contained in locally recorded
 main; deployment also requires the prepared ref to equal HEAD. Neither command
 fetches refs. Staging accepts a preparation from any commit.
 
+For a staging page served at the webhost's project path, prepare with
+`--staging-origin https://pod.dstack.soc1024.com` so browser requests from
+`https://pod.dstack.soc1024.com/private-agent-staging/` use that allowed origin.
+
 Bootstrap a new staging project without a provider envelope first, on the
 coordinator's deployment machine:
 

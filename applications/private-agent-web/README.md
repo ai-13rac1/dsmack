@@ -163,6 +163,12 @@ when no remote main is recorded). Staging accepts topic commits. Both targets
 retain the shared-runtime idle guard. The coordinator supplies the staging page
 SMTP environment and configures its inbound email routing for that hostname.
 
+To serve staging at `https://pod.dstack.soc1024.com/private-agent-staging/`, build
+with `PAGE_STAGING_ORIGIN=https://pod.dstack.soc1024.com` and deploy with
+`--staging-origin https://pod.dstack.soc1024.com`. For a staging rehearsal without
+on-chain publication, omit `pageBundleRegistry` from the public config and use
+`--skip-registry-publication` instead of `--registry-account`.
+
 Run browser boundary checks with an existing browser:
 
 ```sh

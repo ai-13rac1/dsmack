@@ -57,10 +57,12 @@ def prepare(args):
     ref = source_ref(REPO, args.target)
     project = project_name("relay-broker", args.target)
     config = json.loads(args.config.read_text())
+    if args.target != "staging" and args.staging_origin != STAGING_HOST:
+        raise ValueError("--staging-origin requires --target staging")
     if args.target == "staging":
-        config["browser_origins"] = [STAGING_HOST]
+        config["browser_origins"] = [args.staging_origin]
         if config.get("inference"):
-            config["inference"]["origins"] = [STAGING_HOST]
+            config["inference"]["origins"] = [args.staging_origin]
     public_config(config)
     if not config.get("payments") or not config.get("inference"):
         raise ValueError("configuration needs payments and inference blocks")
@@ -210,6 +212,7 @@ def main():
     sub = parser.add_subparsers(required=True)
     p = sub.add_parser("prepare", help="local packaging only")
     p.add_argument("--target", choices=("staging", "production"), required=True)
+    p.add_argument("--staging-origin", choices=(STAGING_HOST, WEBHOST), default=STAGING_HOST)
     p.add_argument("--config", type=Path, required=True)
     p.add_argument("--operator-token-sha256", required=True)
     p.add_argument("--encrypted-env", type=Path)

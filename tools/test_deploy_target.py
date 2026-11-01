@@ -8,8 +8,9 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
-from deploy_target import source_ref, project_name
+from deploy_target import source_ref, project_name, WEBHOST
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,7 +27,7 @@ class SourceGateTests(unittest.TestCase):
             repo=Path(tmp)
             def git(*args):
                 return subprocess.check_output(['git', '-C', tmp, *args], text=True).strip()
-            git('init', '-q')
+            git('init', '-q', '-b', 'fixture')
             git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
             (repo/'source').write_text('first')
             git('add', '.'); git('commit', '-qm', 'first')
@@ -91,7 +92,6 @@ class SourceGateTests(unittest.TestCase):
             token.assert_not_called(); package.assert_not_called()
 
     def test_broker_staging_package_and_upload_use_separate_project_and_keep_idle_guard(self):
-        from types import SimpleNamespace
         broker=load('broker_deploy_stage', ROOT/'applications/relay-broker/deploy-inference.py')
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
@@ -101,7 +101,7 @@ class SourceGateTests(unittest.TestCase):
                 Path(command[-1]).write_text('export default {};')
             with patch.object(broker, 'source_ref', return_value='prepared-commit'), patch.object(broker.subprocess, 'run', side_effect=bundle):
                 broker.prepare(SimpleNamespace(target='staging', config=config, operator_token_sha256='a'*64,
-                                               encrypted_env=None, out=root/'prepared'))
+                                               encrypted_env=None, out=root/'prepared', staging_origin='https://private-agent-staging.dstack.soc1024.com'))
             with tarfile.open(root/'prepared/relay-broker.tgz') as package:
                 packed=json.load(package.extractfile('applications/relay-broker/config.json'))
             self.assertEqual(packed['browser_origins'], ['https://private-agent-staging.dstack.soc1024.com'])
@@ -123,6 +123,68 @@ class SourceGateTests(unittest.TestCase):
                                               apply=True, url='local-fixture', wait_idle_minutes=1))
             self.assertEqual(paths, ['/_api/projects', '/_api/projects/relay-broker-staging/promote', '/relay-broker-staging/key'])
             guard.assert_called_once_with('local-fixture', 1)
+
+    def test_path_host_staging_routes_and_deploys_without_a_chain_transaction(self):
+        page=load('page_deploy_path', ROOT/'applications/private-agent-web/deploy.py')
+        bundle=load('page_bundle_path', ROOT/'applications/private-agent-web/bundle.py')
+        broker=load('broker_deploy_path', ROOT/'applications/relay-broker/deploy-inference.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            config=root/'broker.json'
+            config.write_text(json.dumps(dict(payments={'chainId':84532}, inference=dict(origins=['production']), browser_origins=['production'])))
+            def bundle_module(command, **kwargs):
+                Path(command[-1]).write_text('export default {};')
+            with patch.object(broker, 'source_ref', return_value='test-commit'), patch.object(broker.subprocess, 'run', side_effect=bundle_module):
+                broker.prepare(SimpleNamespace(target='staging', config=config, operator_token_sha256='a'*64,
+                                               encrypted_env=None, out=root/'prepared', staging_origin=WEBHOST))
+            with tarfile.open(root/'prepared/relay-broker.tgz') as archive:
+                packed=json.load(archive.extractfile('applications/relay-broker/config.json'))
+            self.assertEqual(packed['browser_origins'], [WEBHOST])
+            self.assertEqual(packed['inference']['origins'], [WEBHOST])
+
+            dist=root/'dist'; dist.mkdir()
+            (dist/'index.html').write_text('page')
+            (dist/'config.json').write_text(json.dumps(dict(
+                broker=WEBHOST+'/relay-broker-staging', tunnels=WEBHOST+'/private-agent-staging/tunnels',
+                nearAttestation=dict(gatewayComposeHashes=['a'*64], modelComposeHashes=['b'*64]))))
+            payload=bundle.payload(dist); own=bundle.cid(payload)
+            (dist/'page-bundle.tar').write_bytes(payload)
+            (dist/'index.html').write_text(f'<meta name="page-bundle-cid" content="{own}">page')
+            html=(dist/'index.html').read_bytes()
+            page_env=root/'page-env.json'; page_env.write_text('{"EMAIL_RECOVERY_ADDRESS":"recovery@example.invalid"}')
+            calls=[]
+            class Opener:
+                def open(self, request, timeout):
+                    calls.append(request.full_url)
+                    if request.full_url.endswith('/_api/substrate'):
+                        return io.BytesIO(b'{"isolation_modes":["shared"]}')
+                    if request.full_url.endswith('/_api/projects'):
+                        return io.BytesIO(b'{"runtime":"deno","isolation":"shared","mode":"attested"}')
+                    return io.BytesIO(html)
+            with patch('sys.argv', ['deploy.py', '--target', 'staging', '--staging-origin', WEBHOST,
+                                    '--skip-registry-publication', '--dist', str(dist), '--page-env', str(page_env),
+                                    '--operator-token-sha256', 'a'*64, '--evidence', str(root/'evidence')]), \
+                 patch.object(page, 'source_ref', return_value='test-commit'), patch.object(page, 'token', return_value='fixture-only'), \
+                 patch.object(page, 'build_opener', return_value=Opener()), patch.object(page, 'wait_for_idle') as guard, \
+                 patch.object(page.subprocess, 'check_output', return_value=b'export default {};') as output, \
+                 patch.object(page.subprocess, 'run') as run:
+                page.main()
+            run.assert_not_called()
+            self.assertTrue(all(command.args[0][0]=='deno' for command in output.call_args_list))
+            guard.assert_called_once_with(WEBHOST, 10)
+            result=json.loads((root/'evidence/result.json').read_text())
+            self.assertIsNone(result['registry'])
+            self.assertEqual(result['url'], WEBHOST+'/private-agent-staging/')
+            self.assertEqual(calls, [WEBHOST+'/_api/substrate', WEBHOST+'/_api/projects', WEBHOST+'/private-agent-staging/'])
+
+    def test_production_cannot_skip_registry_publication(self):
+        page=load('page_deploy_no_chain', ROOT/'applications/private-agent-web/deploy.py')
+        with patch('sys.argv', ['deploy.py', '--target', 'production', '--skip-registry-publication',
+                                '--evidence', 'unused', '--page-env', 'unused', '--operator-token-sha256', 'a'*64]), \
+             patch.object(page, 'source_ref', return_value='test-commit'), patch.object(page, 'token') as token:
+            with self.assertRaisesRegex(ValueError, 'require --target staging'):
+                page.main()
+            token.assert_not_called()
 
 
 if __name__ == '__main__':

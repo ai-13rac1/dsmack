@@ -21,7 +21,7 @@ PROJECT = "private-agent"
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP.parents[1] / "tools"))
 from deploy_idle import wait_for_idle
-from deploy_target import WEBHOST, STAGING_HOST, project_name, source_ref
+from deploy_target import WEBHOST, STAGING_HOST, project_name, source_ref, staging_page_url
 from bundle import check as check_bundle
 
 
@@ -51,11 +51,11 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def package(dist, target="production", config_path=None):
+def package(dist, target="production", config_path=None, staging_origin=STAGING_HOST):
     config = json.loads((config_path or dist / "config.json").read_bytes())
     if target == "staging":
         config["broker"] = WEBHOST + "/relay-broker-staging"
-        config["tunnels"] = STAGING_HOST + "/tunnels"
+        config["tunnels"] = staging_page_url(staging_origin) + "tunnels"
     if config != json.loads((dist / "config.json").read_bytes()):
         raise ValueError("Build with PAGE_CONFIG and PAGE_TARGET before packaging target config")
     check_bundle(dist)
@@ -81,7 +81,9 @@ def package(dist, target="production", config_path=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("staging", "production"), required=True)
-    parser.add_argument("--registry-account", required=True, help="Existing cast keystore account authorized as PageBundleRegistry publisher")
+    parser.add_argument("--registry-account", help="Existing cast keystore account authorized as PageBundleRegistry publisher")
+    parser.add_argument("--skip-registry-publication", action="store_true", help="Staging only: deploy without a configured bundle registry or on-chain publication")
+    parser.add_argument("--staging-origin", choices=(STAGING_HOST, WEBHOST), default=STAGING_HOST)
     parser.add_argument("--wait-idle-minutes", type=float, default=10)
     parser.add_argument("--config", type=Path, help="Public page config for this target, including broker signing identities")
     parser.add_argument("--dist", type=Path, default=APP / "dist")
@@ -91,6 +93,10 @@ def main():
     parser.add_argument("--page-env", type=Path, required=True, help="Existing private page environment JSON, including email receiver configuration")
     args = parser.parse_args()
     ref = source_ref(APP.parents[1], args.target)
+    if args.target != "staging" and (args.skip_registry_publication or args.staging_origin != STAGING_HOST):
+        raise ValueError("staging deployment options require --target staging")
+    if not args.skip_registry_publication and not args.registry_account:
+        raise ValueError("--registry-account is required for bundle publication")
     project_name_value = project_name(PROJECT, args.target)
     if args.operator_token_sha256 and not re.fullmatch(r"[0-9a-f]{64}",args.operator_token_sha256):
         raise ValueError("operator token SHA256 must be lowercase hex")
@@ -103,13 +109,16 @@ def main():
         raise ValueError("Page environment values must be strings")
     own_cid = check_bundle(args.dist.resolve())
     config = json.loads((args.dist / "config.json").read_text())
-    registry = config["pageBundleRegistry"]
-    if len(registry["rpcs"]) != 2 or registry["rpcs"][0] == registry["rpcs"][1]:
+    registry = config.get("pageBundleRegistry")
+    if args.skip_registry_publication:
+        if "pageBundleRegistry" in config:
+            raise ValueError("Remove pageBundleRegistry when skipping staging publication")
+    elif not registry or len(registry["rpcs"]) != 2 or registry["rpcs"][0] == registry["rpcs"][1]:
         raise ValueError("Page bundle registry requires two independent RPCs")
     for hashes in ("gatewayComposeHashes", "modelComposeHashes"):
         if not config["nearAttestation"][hashes]:
             raise ValueError("Configure reviewed NEAR compose hashes before deployment")
-    archive = package(args.dist.resolve(), args.target, args.config)
+    archive = package(args.dist.resolve(), args.target, args.config, args.staging_origin)
     args.evidence.mkdir(parents=True, exist_ok=True)
     admin = token()
     base = args.url.rstrip("/")
@@ -170,15 +179,16 @@ def main():
             if attempt == 29:
                 raise
             time.sleep(2)
-    # Publish only after the new page is served; failed transactions propagate.
-    subprocess.run(["cast", "send", "--rpc-url", registry["rpcs"][0], "--chain", "84532",
-                    "--account", args.registry_account, registry["registry"], "publish(string)", own_cid], check=True)
-    for rpc in registry["rpcs"]:
-        published = subprocess.check_output(["cast", "call", "--rpc-url", rpc, "--chain", "84532",
-                                           registry["registry"], "latestCID()(string)"], text=True).strip().strip('"')
-        if published != own_cid:
-            raise ValueError("Published bundle CID differs from deployed page")
-    summary = {"bundleCID": own_cid, "registry": registry["registry"], "url": (STAGING_HOST + "/" if args.target == "staging" else base + "/private-agent/"), "runtime": project["runtime"],
+    if not args.skip_registry_publication:
+        # Publish only after the new page is served; failed transactions propagate.
+        subprocess.run(["cast", "send", "--rpc-url", registry["rpcs"][0], "--chain", "84532",
+                        "--account", args.registry_account, registry["registry"], "publish(string)", own_cid], check=True)
+        for rpc in registry["rpcs"]:
+            published = subprocess.check_output(["cast", "call", "--rpc-url", rpc, "--chain", "84532",
+                                               registry["registry"], "latestCID()(string)"], text=True).strip().strip('"')
+            if published != own_cid:
+                raise ValueError("Published bundle CID differs from deployed page")
+    summary = {"bundleCID": own_cid, "registry": registry["registry"] if registry else None, "url": (staging_page_url(args.staging_origin) if args.target == "staging" else base + "/private-agent/"), "runtime": project["runtime"],
                "isolation": project["isolation"], "mode": project["mode"],
                "ref": ref}
     write(args.evidence / "result.json", summary)

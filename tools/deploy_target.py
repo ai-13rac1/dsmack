@@ -5,6 +5,12 @@ WEBHOST = 'https://pod.dstack.soc1024.com'
 STAGING_HOST = 'https://private-agent-staging.dstack.soc1024.com'
 
 
+def staging_page_url(origin):
+    if origin not in (STAGING_HOST, WEBHOST):
+        raise ValueError('staging origin must be the staging hostname or webhost')
+    return origin + ('/private-agent-staging/' if origin == WEBHOST else '/')
+
+
 def project_name(project, target):
     return project + ('-staging' if target == 'staging' else '')
 
