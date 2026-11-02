@@ -721,3 +721,37 @@ test("funded inference debit accrues exactly once to the configured provider pay
  assert.equal(f.payments.state.inferenceCredit[wallet].prepaidSpentNanoUsd,"300");
  assert.equal(Object.values(f.payments.state.operatorAccruals[wallet][operator]).reduce((n,v)=>n+BigInt(v),0n),300n);
 });
+
+test("duplicate signed prepare shares one attestation and the same session", async () => {
+  const f = fixture();
+  await f.credit();
+  const request = await f.signed("prepare", { attestationNonce: "cd".repeat(32) });
+  const [a, b] = await Promise.all([f.inference.prepare(request), f.inference.prepare(request)]);
+  assert.deepEqual(a, b);
+  assert.deepEqual(await f.inference.prepare(request), a);
+  assert.equal(f.attests(), 1);
+  const changed = await f.signed("prepare", { nonce: request.nonce, attestationNonce: "ef".repeat(32) });
+  await assert.rejects(f.inference.prepare(changed), code("REQUEST_REPLAY"));
+});
+
+test("duplicate signed chat dispatches and reserves once, including after restart", async () => {
+  const f = fixture();
+  await f.credit();
+  const request = await f.signed("chat", await f.encrypted(await f.prepare()));
+  const responses = await Promise.all([f.inference.chat(request), f.inference.chat(request)]);
+  const original = responses.find(r => r.status === 200), duplicate = responses.find(r => r.status === 202);
+  assert(original && duplicate);
+  const dispatched = await duplicate.json();
+  assert.equal(dispatched.code, "REQUEST_ALREADY_DISPATCHED");
+  assert.equal(dispatched.sessionId, request.sessionId);
+  await original.text();
+  assert.equal(f.calls(), 1);
+  assert.equal(Object.keys(f.saved().inferenceRequests).length, 1);
+  const restarted = new Inference({ payments: f.payments, cfg: { model: MODEL }, provider: f.provider, now: () => 2000000000 });
+  assert.equal((await restarted.chat(request)).status, 202);
+  await f.inference.usage(await f.signed("usage"));
+  assert.equal((await restarted.chat(request)).status, 202);
+  assert.equal(f.calls(), 1);
+  const changed = await f.signed("chat", { ...request, sig: undefined, body: { ...request.body, max_tokens: 1 } });
+  await assert.rejects(f.inference.chat(changed), code("REQUEST_REPLAY"));
+});

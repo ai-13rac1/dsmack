@@ -261,6 +261,10 @@ export function brokerStream(
           stream: true,
           signal: options.signal,
         });
+        if (response.status === 202) {
+          const dispatched = await response.json();
+          throw Object.assign(new Error(dispatched.code + ": " + dispatched.message), { code: dispatched.code });
+        }
         const decrypted = await prepared.decryptResponse(response);
         let done = false, finishReason;
         const toolCalls = new Map();

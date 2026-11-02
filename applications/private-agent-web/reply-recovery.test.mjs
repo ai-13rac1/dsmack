@@ -61,3 +61,16 @@ test('cancelled replies allow retry and unfinished calls get one failed result',
   failOrphanedTools(history, 'Cancelled');
   assert.equal(retryCandidate(history), lostReply);
 });
+
+test('duplicate delivery and invalid provider JSON identify recovery actions and codes', () => {
+  for (const code of ['REQUEST_REPLAY', 'REQUEST_ALREADY_DISPATCHED']) {
+    const failure = replyFailure(Object.assign(Error('already sent'), {code}));
+    assert.match(failure.message, new RegExp(code));
+    assert.match(failure.message, /Reconcile provider usage.*Retry/);
+    assert.equal(failure.retryable, true);
+  }
+  const failure = replyFailure(Error('[api.invalid_input] Cloud API client input request body is invalid: invalid_json'));
+  assert.match(failure.message, /api.invalid_input.*invalid_json.*Send again.*another browser/);
+  assert.equal(failure.retryable, true);
+  assert.match(replyFailure(Error('BAD_REQUEST: invalid message')).message, /BAD_REQUEST.*Send again/);
+});
