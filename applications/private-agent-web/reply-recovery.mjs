@@ -1,3 +1,11 @@
+// DOMException.message is read-only; retain abort identity and the original cause.
+export function referenceError(error, ref) {
+  if (!ref) return error;
+  return Object.assign(new Error(`${error.message || String(error)} (ref ${ref})`, { cause: error }), {
+    name: error.name, code: error.code, status: error.status, retryAfterSeconds: error.retryAfterSeconds, ref,
+  });
+}
+
 // Keep transport failures actionable without treating a model's partial text as
 // a completed answer. This object is saved with the native Pi assistant message.
 export function replyFailure(error, { partial = false, online = globalThis.navigator?.onLine } = {}) {

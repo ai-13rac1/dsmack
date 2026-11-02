@@ -25,7 +25,7 @@ import {
   walletBody,
 } from "./credit.mjs";
 import { brokerStream, PRIVACY } from "./inference.mjs";
-import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
+import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
 import { monitorLabel } from "../egress-policy/monitor/registry.mjs";
@@ -131,8 +131,7 @@ async function api(path, body, opts = {}) {
     }
     return opts.stream ? response : await response.json();
   } catch (error) {
-    if (ref) { error.ref = ref; error.message += ` (ref ${ref})`; }
-    throw error;
+    throw referenceError(error, ref);
   }
 }
 function render() {

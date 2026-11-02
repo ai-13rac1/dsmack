@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from './reply-recovery.mjs';
+import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from './reply-recovery.mjs';
 
 test('offline, broker restart, provider and credit failures identify an action', () => {
   const offline = replyFailure(Error('network error'), { partial: true, online: false });
@@ -84,4 +84,17 @@ test('request refs survive actionable provider, replay and network error renderi
   }
   const broken=replyFailure(Object.assign(Error('connection lost'),{ref:'1234abcd',status:502}),{partial:true});
   assert.match(broken.message,/Retry.*ref 1234abcd/);
+});
+
+
+test('attaching an API ref preserves an abort with a read-only DOMException message', () => {
+  const aborted=new DOMException('The operation was aborted.','AbortError');
+  const linked=referenceError(aborted,'1234abcd');
+  assert.equal(linked.name,'AbortError');
+  assert.equal(linked.code,aborted.code);
+  assert.equal(linked.cause,aborted);
+  assert.equal(linked.ref,'1234abcd');
+  assert.match(linked.message,/ref 1234abcd/);
+  assert.equal(aborted.message,'The operation was aborted.');
+  assert.equal(referenceError(aborted,undefined),aborted);
 });
