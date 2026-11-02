@@ -448,8 +448,7 @@ async function useSession(data) {
         const saved = lastSave.catch(() => {}).then(() => persistSession(record.session, record.agent));
         lastSave = saved;
         await saved;
-        require(sync, "Unlock chat sync before saving your workspace.");
-        await sync.push(conversationId);
+        if (sync) await sync.push(conversationId);
       },
       changed: status => {
         const held = guests.get(conversationId);
