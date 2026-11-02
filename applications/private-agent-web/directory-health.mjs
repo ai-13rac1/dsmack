@@ -66,6 +66,9 @@ export async function monitorCapacity({ target, url, state, notify, check = chec
   result.badSince = result.ok ? null : contiguous && prior.badSince !== null ? prior.badSince : at;
   result.alerted = prior?.alerted ?? false;
   const failing = !result.ok && at - result.badSince >= 180;
+  // Preserve this observation even if delivery fails, so the next scheduled
+  // retry keeps the observed outage rather than restarting its three minutes.
+  await saveState(state, { ...result, lastSampleAt: at });
   if ((failing && !result.alerted) || (result.ok && result.alerted)) {
     await notify(`Dsmack ${target} capacity ${result.ok ? "RECOVERED" : "FAILED"}: ${url}\n` +
       (result.error || `ready_slots=${result.readySlots}, macs_online=${result.macsOnline}`) +

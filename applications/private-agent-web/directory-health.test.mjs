@@ -47,6 +47,7 @@ test("missing samples reset the capacity streak; failed notifications can be ret
     for (at of [660, 720]) await monitorCapacity(args);
     at = 780;
     await assert.rejects(monitorCapacity({ ...args, notify: () => { throw Error("Matrix unavailable"); } }), /Matrix unavailable/);
+    at = 840;
     await monitorCapacity(args);
     assert.equal(messages.length, 1);
     await assert.rejects(checkCapacity(args.url, { fetcher: () => Response.json({ totals: {} }) }), /invalid/);
