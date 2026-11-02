@@ -5,11 +5,11 @@ cd "$(dirname "$0")"
 for d in tests tools base-vm runner-vm applications/{agent-turns,bounties,bounty-dashboard,pilot-client,compute-node,libp2p-attest,mac-ownership} contracts/payments dstack-compat; do
     python3 -m pytest -q -p no:cacheprovider "$d"
 done
-node --test $(find applications dstack-compat \( -name node_modules -o -name primary-original -o -path applications/relay-broker -o -path applications/payments -o -path applications/private-agent-web \) -prune -o \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name 'test_*.mjs' \) -print)
+node --test $(find applications dstack-compat \( -name node_modules -o -name primary-original -o -path applications/relay-broker -o -path applications/payments -o -path applications/private-agent-web -o -path applications/operator-fleet/chain.test.mjs \) -prune -o \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name 'test_*.mjs' \) -print)
 for d in applications/{compute-node,egress-relay,libp2p-attest}/peer applications/{egress-policy,payments/guest}; do
     (cd "$d" && go test ./...)
 done
-deno test --allow-read --allow-write --allow-net --allow-env applications/relay-broker applications/payments/payments.test.mjs
+deno test --allow-read --allow-write --allow-net --allow-env applications/relay-broker applications/payments/payments.test.mjs applications/operator-fleet/chain.test.mjs
 . app-attest/circuit/env.sh
 forge test --root contracts --offline --use "$SOLC"
 forge test --root contracts/work-escrow --offline --use "$SOLC"
