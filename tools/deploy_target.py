@@ -15,13 +15,20 @@ def project_name(project, target):
     return project + ('-staging' if target == 'staging' else '')
 
 
-def source_ref(repo, target):
+def source_ref(repo, target, release_tag=None):
     def git(*args):
         return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
     head = git('rev-parse', 'HEAD')
     if target == 'production':
         if git('status', '--porcelain', '--untracked-files=all'):
             raise ValueError('production requires a clean source tree')
+        if release_tag:
+            if not release_tag.startswith('private-agent-v') or '/' in release_tag:
+                raise ValueError('release tag must name a private-agent version')
+            tagged = git('rev-parse', '--verify', 'refs/tags/'+release_tag+'^{commit}')
+            if tagged != head:
+                raise ValueError('release tag must point exactly at HEAD')
+            return head
         # Prefer the locally recorded GitHub main; never fetch or change remotes.
         for ref in ('refs/remotes/origin/main', 'refs/heads/main'):
             if subprocess.run(['git', '-C', str(repo), 'show-ref', '--verify', '--quiet', ref]).returncode == 0:

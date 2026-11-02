@@ -285,3 +285,6 @@ EVIDENCE=/absolute/path/to/evidence node prepaid.browser.mjs
 
 The test serves the built page locally, intercepts service requests, and submits
 USDC transactions only to anvil. It writes deposit, withdrawal and fleet screenshots.
+
+For an approved release branch, pass `--release-tag private-agent-vVERSION`.
+The tag must point exactly at the clean source HEAD.
