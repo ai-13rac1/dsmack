@@ -5,7 +5,7 @@ title: "Platform release vX.Y.Z"
 labels: epic
 ---
 
-Steps from [docs/release/releasing.md](../../docs/release/releasing.md).
+Steps from [docs/release/releasing.md](https://github.com/amiller/dsmack/blob/main/docs/release/releasing.md).
 
 - [ ] Breaking changes collected on this milestone are decided together; list them here
 - [ ] Tag a reviewed commit `vX.Y.Z`

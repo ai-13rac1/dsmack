@@ -15,7 +15,7 @@ Testers hit failures we cannot see, and the broker only logs request outcomes.
 Broker logs and any page error report use a closed set of fields: event, time,
 reference, error code, HTTP status, duration and sizes. No message text, model
 output, tool output or wallet. The reference shown with a page error matches the
-broker's log line. A user who wants to share a trace exports it themselves.
+broker's log line. A trace leaves the browser only when the user shares it.
 
 ## Consequences
 

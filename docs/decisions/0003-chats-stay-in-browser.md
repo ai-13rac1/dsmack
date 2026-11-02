@@ -19,5 +19,5 @@ hand the wallet and that key to a new browser.
 
 ## Consequences
 
-Losing every device and recovery method loses the chats. Debugging needs the
-user's own export, since the operator cannot read traces.
+Losing every device and recovery method loses the chats. The operator cannot read
+traces, so debugging a failure needs the user to share one from their browser.

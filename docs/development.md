@@ -7,9 +7,9 @@ How the repository is divided, how work is tracked, and how each part is release
 | Stream | What it is | Paths | Released as |
 |---|---|---|---|
 | **Platform** | What a third party checks: the Mac app, the Linux image it boots, the guest API, App Attest verification and the evidence formats | see below | `vX.Y.Z` ([versioning](versioning.md)) |
-| **Network** | Macs serving guests to browsers: pool, broker, payments, Mac ownership, egress, directory | `applications/compute-node`, `relay-broker`, `payments`, `mac-ownership`, `egress-policy`, `egress-relay`, `libp2p-attest`, `browser-p2p`, `contracts/payments`, `contracts/src/UsageEscrow.sol` | with the app that deploys it |
-| **Apps** | Products built on the platform and network | `applications/private-agent-web`, `private-agent-artifacts`, `agent-turns`, `bounties`, `coordinator`, `contracts/work-escrow` | own tags, e.g. `private-agent-v0.4.0` |
-| **Ops** | Monitoring, dashboards, deploy tooling | `applications/network-dashboard`, `operator-fleet`, `bounty-dashboard`, `pilot-client`, `tools/` | not versioned |
+| **Network** | Macs serving guests to browsers: pool, broker, payments, Mac ownership, egress, directory | `applications/{compute-node,relay-broker,payments,mac-ownership,egress-policy,egress-relay,libp2p-attest,browser-p2p}`, `contracts/payments`, `contracts/src/UsageEscrow.sol` | with the app that deploys it |
+| **Apps** | Products built on the platform and network | `applications/{private-agent-web,private-agent-artifacts,agent-turns,bounties,coordinator}`, `contracts/work-escrow` | own tags, e.g. `private-agent-v0.4.0` |
+| **Ops** | Monitoring, dashboards, deploy tooling | `applications/{network-dashboard,operator-fleet,bounty-dashboard,pilot-client}`, `tools/` | not versioned |
 
 Apps pin the platform release they run on. Workloads (OCI containers) belong to
 the app that uses them and are named by digest.
@@ -25,12 +25,11 @@ others.
 | **Base image** | Linux kernel, initramfs, verity root, container runtime, task start and result export | `base-vm/` | image hash in the signed release inventory | an admitted image is dropped from the inventory, or the task interface changes. Adding an image is not breaking |
 | **Guest API** | dstack's guest API v1 on `/var/run/dstack.sock`, so one compose file runs on dstack and on a Mac | `dstack-compat/` | API version | a call or response changes |
 | **Attestation** | App Attest verification in Solidity and Noir, the approved-code and key registries, Apple's root | `app-attest/`, `contracts/src/AppleAttestRegistryV1.sol`, `contracts/src/CDRegistry.sol`, `trust/` | contract address, circuit | an address or interface changes |
-| **Evidence** | Statement, receipt, envelope and signed report, and the Python verifier that reads them | `verifier/` | format name and number, e.g. `dsmack.statement/1` | the verifier rejects evidence an older release wrote |
+| **Evidence** | Statement, receipt, envelope and signed report, and the Python verifier that reads them | `verifier/` | format name and number, e.g. `dsmack-general-launcher/v3-run-statement/1` | the verifier rejects evidence an older release wrote |
 
 ## Issues
 
-Platform and network issues go in this repository. Private-agent product issues and
-operations are tracked in the maintainer's private repository for now.
+Issues go in this repository.
 
 Labels exist to route a decision, not to describe an issue:
 
