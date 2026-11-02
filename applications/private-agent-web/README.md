@@ -1,5 +1,26 @@
 # Private agent web
 
+The chain directory uses two matching replies from three configured HTTPS RPC
+hosts at a pinned block hash. Configure `chainDirectory.rpcs` in `config.json`.
+
+Run the same discovery checks from cron on the monitoring host with Deno and
+the existing local Hermes Matrix environment:
+
+```sh
+python3 applications/private-agent-web/install-directory-health.py
+```
+
+This installs checks every five minutes for production and staging. State and
+logs live in `~/.local/state/dsmack-directory/`. Each outage posts once to
+`#fractal-ops`, then posts once on recovery. Failed notifications leave the
+previous state in place for the next run. To check a separate target:
+
+```sh
+deno run --allow-net --allow-read --allow-write --allow-run \
+  applications/private-agent-web/directory-health.mjs test CONFIG_URL \
+  /absolute/test-state.json /absolute/directory-notify.sh
+```
+
 Dsmack Agent is one Pi conversation with `bash`, `read`, `write` and `edit`
 running in an attested Mac-hosted Linux guest. Tool calls and results appear
 inline. Model requests and responses remain encrypted between the browser and

@@ -26,6 +26,7 @@ export const RPCS = [
   "https://sepolia.base.org",
   "https://base-sepolia-rpc.publicnode.com",
   "https://base-sepolia.drpc.org",
+  "https://base-sepolia.gateway.tenderly.co",
 ];
 export const Receipt = [
   { name: "purchaseId", type: "uint256" },

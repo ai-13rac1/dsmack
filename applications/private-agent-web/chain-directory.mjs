@@ -26,9 +26,26 @@ async function rpc(url, method, params, signal, fetcher) {
 }
 
 async function agreed(snapshot, method, params, signal, fetcher) {
-  const replies = await Promise.all(snapshot.providers.map(url => rpc(url, method, params, signal, fetcher)));
-  need(canonical(replies[0]) === canonical(replies[1]), `the two RPC providers disagree on ${method} at block ${snapshot.blockNumber}.`);
-  return replies[0];
+  const controller = new AbortController(), groups = new Map();
+  const readSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  return new Promise((resolve, reject) => {
+    let remaining = snapshot.providers.length;
+    const errors = [];
+    for (const url of snapshot.providers) {
+      (async () => {
+        try {
+          await snapshot.checkProvider(url);
+          const value = await rpc(url, method, params, readSignal, fetcher);
+          const key = canonical(value), count = (groups.get(key) || 0) + 1;
+          groups.set(key, count);
+          if (count === 2) { resolve(value); controller.abort(); }
+        } catch (error) { errors.push(`${new URL(url).hostname}: ${error.message}`); }
+        finally {
+          if (--remaining === 0) reject(Error(`Chain directory: RPC providers disagree or are unavailable on ${method} at block ${snapshot.blockNumber}; ${errors.join("; ")}`));
+        }
+      })();
+    }
+  });
 }
 
 async function call(snapshot, to, abi, method, args, signal, fetcher) {
@@ -69,22 +86,34 @@ export function signedTunnelNodes(value, publisher, now = Math.floor(Date.now() 
 export async function discoverChainNodes({ config, signal, fetcher = fetch, now } = {}) {
   const settings = config.chainDirectory;
   need(settings?.registry && settings.publisher, "the TunnelIndex and Mac publisher are not configured.");
-  const providers = settings.rpcs || ["https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com"];
-  need(providers.length === 2 && new Set(providers.map(url => new URL(url).hostname)).size === 2 && providers.every(url => new URL(url).protocol === "https:"),
-    "two independent HTTPS RPC providers are required.");
+  const providers = settings.rpcs;
+  need(Array.isArray(providers) && [2, 3].includes(providers.length) && new Set(providers.map(url => new URL(url).hostname)).size === providers.length && providers.every(url => new URL(url).protocol === "https:"),
+    "two or three independent HTTPS RPC providers are required.");
   need(config.chainId === 84532, "Base Sepolia is required.");
-  const heads = await Promise.all(providers.map(async url => {
+  const heads = providers.map(async url => {
     const [chain, height] = await Promise.all([rpc(url, "eth_chainId", [], signal, fetcher), rpc(url, "eth_blockNumber", [], signal, fetcher)]);
     need(Number(chain) === 84532, `${new URL(url).hostname} returned the wrong chain.`);
     need(/^0x[0-9a-f]+$/i.test(height), "RPC returned an invalid block height.");
     return BigInt(height);
-  }));
-  const height = heads[0] < heads[1] ? heads[0] : heads[1];
-  const snapshot = { providers: [...providers], blockNumber: Number(height), blockTag: "0x" + height.toString(16) };
-  const headers = await Promise.all(providers.map(url => rpc(url, "eth_getBlockByNumber", [snapshot.blockTag, false], signal, fetcher)));
-  need(headers.every(header => header?.number === snapshot.blockTag && /^0x[0-9a-f]{64}$/i.test(header.hash)) && same(headers[0].hash, headers[1].hash),
-    "the two RPC providers disagree on the directory block.");
-  snapshot.blockHash = headers[0].hash;
+  });
+  // Each pair reads one common height. The first agreeing pair wins, without
+  // waiting for the third provider's head or block request.
+  const pairs = (providers.length === 2 ? [[0, 1]] : [[0, 1], [0, 2], [1, 2]]).map(async ([a, b]) => {
+    const heights = await Promise.all([heads[a], heads[b]]);
+    const height = heights[0] < heights[1] ? heights[0] : heights[1];
+    const tag = "0x" + height.toString(16);
+    const headers = await Promise.all([a, b].map(i => rpc(providers[i], "eth_getBlockByNumber", [tag, false], signal, fetcher)));
+    need(headers.every(header => header?.number === tag && /^0x[0-9a-f]{64}$/i.test(header.hash)) && same(headers[0].hash, headers[1].hash),
+      "RPC providers disagree on the directory block.");
+    return { blockNumber: Number(height), blockHash: headers[0].hash };
+  });
+  let block;
+  try { block = await Promise.any(pairs); }
+  catch (error) { throw Error("Chain directory: no two RPC providers agree on a directory block; " + error.errors.map(e => e.message).join("; ")); }
+  const snapshot = { ...block, providers: [...providers],
+    blockTag: { blockHash: block.blockHash, requireCanonical: true },
+    checkProvider: url => heads[providers.indexOf(url)],
+  };
   const owner = (await call(snapshot, settings.registry, index, "owner", [], signal, fetcher))[0];
   need(same(owner, settings.publisher), "TunnelIndex owner differs from the pinned Mac publisher.");
   if (settings.codeHash) {

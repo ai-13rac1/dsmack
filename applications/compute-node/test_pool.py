@@ -184,6 +184,46 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(instance.launch.call_count, 2)
             self.assertEqual(instance.event.call_args.kwargs['last_error'], failure)
 
+    def test_rpc_refusals_back_off_without_consuming_guest_strikes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); instance = self.instance(root)
+            failure = {'stage': 'broker_registration', 'status': 403,
+                       'body': 'refused: RPC quorum disagreement/unavailable: eth_call', 'error': 'HTTP 403'}
+            for attempt, delay in enumerate([60, 120, 240, 480, 900, 900, 900]):
+                node = self.failed_node(root/str(attempt)); instance.active = [node]
+                with patch.object(pool, 'guest_result', return_value={'error': failure}), \
+                        patch.object(pool, 'guest_closed', return_value=True), \
+                        patch.object(pool, 'preserve_and_retire', return_value={}):
+                    instance.tick()
+                self.assertEqual(instance.slots[0]['broker_backoff'], delay)
+                self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
+                self.assertFalse(instance.slots[0]['stopped'])
+            instance.launch.assert_not_called()
+            with patch.object(pool.time, 'monotonic', return_value=instance.slots[0]['retry_at']+1):
+                instance.tick()
+            instance.launch.assert_called_once()
+
+    def test_broker_outage_cannot_hide_a_missing_guest_result_closure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); instance = self.instance(root)
+            failure = {'stage': 'broker_registration', 'error': 'stale/future finalized head'}
+            for number in range(3):
+                instance.active = [self.failed_node(root/str(number))]
+                with patch.object(pool, 'guest_result', return_value={'error': failure}), \
+                        patch.object(pool, 'guest_closed', return_value=False), \
+                        patch.object(pool, 'preserve_and_retire', return_value={}):
+                    instance.tick()
+            self.assertTrue(instance.slots[0]['stopped'])
+
+    def test_unreachable_broker_delays_boot_and_does_not_consume_a_strike(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self.instance(Path(tmp)); instance.launch.side_effect = pool.BrokerUnavailable
+            instance.last_broker_error = {'stage': 'broker_readiness', 'error': 'connection refused'}
+            instance.tick(); instance.tick()
+            instance.launch.assert_called_once()
+            self.assertEqual(instance.slots[0]['broker_backoff'], 60)
+            self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
+
     def test_readiness_does_not_erase_failed_guest_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             instance = self.instance(Path(tmp)); instance.slots[0]['consecutive_failures'] = 2

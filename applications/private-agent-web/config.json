@@ -27,7 +27,8 @@
     "publisher": "0xa43f9f32411358c1319cb36027650a206644c131",
     "rpcs": [
       "https://sepolia.base.org",
-      "https://base-sepolia-rpc.publicnode.com"
+      "https://base-sepolia-rpc.publicnode.com",
+      "https://base-sepolia.gateway.tenderly.co"
     ]
   },
   "nearAttestation": {

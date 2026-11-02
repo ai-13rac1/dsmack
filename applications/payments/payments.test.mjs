@@ -37,7 +37,7 @@ const code = "0x6000",
     rpcs: ["https://a.invalid", "https://b.invalid", "https://c.invalid"],
     destinationPolicyHash: zero,
   };
-function rpc(overrides = {}) {
+function rpc(overrides = {}, rpcs = cfg.rpcs) {
   const block = {
     number: "0x20",
     hash: "0x" + "aa".repeat(32),
@@ -59,8 +59,20 @@ function rpc(overrides = {}) {
     if (overrides[method]) result = overrides[method](url, params, result);
     return Response.json({ jsonrpc: "2.0", id: 1, result });
   };
-  return { q: new Quorum({ ...cfg, now: () => now, fetcher }), calls, block };
+  return { q: new Quorum({ ...cfg, rpcs, now: () => now, fetcher }), calls, block };
 }
+test("quorum requires a strict majority of configured hosts, including failed hosts", async () => {
+  for (const count of [4, 5]) {
+    const rpcs = Array.from({ length: count }, (_, i) => `https://p${i}.example`);
+    const votes = agree => rpc({ eth_getCode: url => rpcs.indexOf(url) < agree ? code : "0x6001" }, rpcs).q.snapshot();
+    await votes(3);
+    await assert.rejects(votes(2), /quorum disagreement|code mismatch/);
+    await assert.rejects(rpc({ eth_getCode: url => {
+      if (rpcs.indexOf(url) >= 2) throw Error("offline");
+      return code;
+    } }, rpcs).q.snapshot(), /quorum disagreement/);
+  }
+});
 test("quorum freezes calls to a common finalized hash and tolerates one wrong provider", async () => {
   const { q, calls, block } = rpc({
     eth_getBlockByNumber: (url, _, value) => ({

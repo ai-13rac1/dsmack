@@ -156,7 +156,7 @@ def main():
     p.add_argument('--pool-version',required=True,help='source commit used by this staged pool')
     p.add_argument('--operator',type=Path,default=Path.home()/'.dsmack/operator.json')
     p.add_argument('--broker',required=True);p.add_argument('--index',required=True)
-    p.add_argument('--publication-rpc',default='https://base-sepolia-rpc.publicnode.com')
+    p.add_argument('--publication-rpc',action='append',help='ordered publication RPC; repeat for several providers')
     p.add_argument('--ipfs-bin',type=Path);p.add_argument('--ipfs-car',type=Path);p.add_argument('--ipfs-state',type=Path)
     p.add_argument('--registry',required=True);p.add_argument('--publisher-address',required=True)
     a=p.parse_args()
@@ -233,7 +233,9 @@ def main():
         return out
     def run_publication(out,chain):
         cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out]
-        if chain:cmd+=['--rpc',a.publication_rpc]
+        if chain:
+            for url in a.publication_rpc or ['https://base-sepolia-rpc.publicnode.com', 'https://base-sepolia.gateway.tenderly.co', 'https://sepolia.base.org']:
+                cmd+=['--rpc',url]
         subprocess.run([str(x) for x in cmd],check=True,timeout=480)
     def publish(entries,chain):
         if chain:publish_chain(entries,pending_path,prepare,lambda out:run_publication(out,True))

@@ -139,7 +139,32 @@ Stop with `kill -TERM LAUNCHER_PID`. It drains owned guests, preserves logs,
 assertions, original result disks and signed receipts, retires temporary disks,
 clears its discovery hints, and stops its relay, tunnel and helper. Each
 `run-*/evidence/` directory retains the guest evidence and reclaimed-space record.
-No launchd or systemd service is installed.
+Broker chain/RPC refusals and unreachable brokers retry after 60 seconds,
+doubling to 15 minutes without a retry limit. Guest attestation and result
+closure failures still stop a slot after three consecutive failures.
+Repeat `--publication-rpc HTTPS_URL` to specify ordered publication providers.
+Each failed provider is logged; an ambiguous submission retries the same signed
+transaction and checks its receipt before completing.
+
+To supervise a pool with launchd, put its complete command argv in a Mac-local
+JSON file, using absolute executable paths and omitting `--state`. Each launch
+gets a fresh state directory under the service root. Write a definition, install
+it, or uninstall it with:
+
+```sh
+python3 applications/compute-node/pool-service.py write \
+  --label org.dsmack.pool.staging --root /absolute/staging/service \
+  --command /absolute/staging/pool-command.json
+python3 applications/compute-node/pool-service.py install \
+  --label org.dsmack.pool.staging --root /absolute/staging/service \
+  --command /absolute/staging/pool-command.json
+python3 applications/compute-node/pool-service.py uninstall \
+  --label org.dsmack.pool.staging --root /absolute/staging/service \
+  --command /absolute/staging/pool-command.json
+```
+
+The agent restarts an exited launcher after launchd's 60-second throttle. Logs
+are in the service root. Uninstall allows the launcher to drain its owned guests.
 
 Restart the pool with `SIGHUP` to the launcher. It validates the replacement's
 files, measured base and template hashes and expected workload/compose hashes,

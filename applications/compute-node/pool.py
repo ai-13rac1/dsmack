@@ -154,6 +154,20 @@ def error_details(message, stage, **fields):
     return details
 
 
+def external_broker_error(error):
+    """Chain unavailability and transport failures cannot consume a guest strike."""
+    if not error:
+        return False
+    stage = error.get('stage', '')
+    message = error.get('error', '') + ' ' + error.get('body', '')
+    if not (stage.startswith('broker') or re.search(r'(?:POST |Post ").*/nodes', message)):
+        return False
+    return bool(re.search(r'RPC|quorum|stale/future finalized head|finalized block (?:stale|future)', message, re.I)
+                or error.get('status') in (408, 429, 502, 503, 504)
+                or (error.get('status') is None and re.search(
+                    r'connection refused|connection reset|timeout|timed out|no such host|dial tcp|network is unreachable|EOF', message, re.I)))
+
+
 def guest_result(run, debugfs):
     """Read diagnostic exports after the owned helper stops; retain exact bytes."""
     stopped_helper(run)
@@ -305,6 +319,12 @@ class Pool:
         with (self.args.state/'pool.jsonl').open('a') as log:
             log.write(json.dumps(record)+'\n')
 
+    def retry_broker(self, slot, error):
+        delay = min(900, max(60, slot.get('broker_backoff', 0) * 2))
+        slot.update(broker_backoff=delay, retry_at=time.monotonic()+delay,
+                    retry_pending=True, last_error=error)
+        self.event('broker_retry', slot_id=slot['slot_id'], retry_seconds=delay, last_error=error)
+
     def nodes(self):
         raw = b''
         status = None
@@ -383,11 +403,11 @@ class Pool:
                 normal_timeout = (outputs.get('status') == 'cancelled'
                                   and (outputs.get('cancel') or {}).get('reason') == 'timeout'
                                   and (not result.get('error') or result['error'].get('terminal') is False))
+                closed = guest_closed(node['path'])
                 failed = (proc.returncode != 0 or node['node'] is None or node.get('readiness_failed')
-                          or not guest_closed(node['path']) or not (outputs.get('status') == 'completed' or normal_timeout))
+                          or not closed or not (outputs.get('status') == 'completed' or normal_timeout))
                 cleanup = preserve_and_retire(node['path'], self.args.repo)
                 if failed:
-                    slot['consecutive_failures'] += 1
                     slot['retry_pending'] = True
                     actual_error = result.get('error')
                     if not actual_error or actual_error.get('stage') == 'result_extraction':
@@ -399,11 +419,16 @@ class Pool:
                     self.remember_error({'at': int(time.time()), 'slot_id': slot['slot_id'], **slot['last_error']})
                     self.event('guest_failed', slot_id=slot['slot_id'], run=str(node['path']), consecutive_failures=slot['consecutive_failures'],
                                last_error=slot['last_error'], **cleanup)
-                    if slot['consecutive_failures'] >= 3:
-                        slot['stopped'] = True
-                        self.event('failure_limit', slot_id=slot['slot_id'], consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
+                    if closed and external_broker_error(slot['last_error']):
+                        self.retry_broker(slot, slot['last_error'])
+                    else:
+                        slot['consecutive_failures'] += 1
+                        if slot['consecutive_failures'] >= 3:
+                            slot['stopped'] = True
+                            self.event('failure_limit', slot_id=slot['slot_id'], consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
                 else:
                     slot['consecutive_failures'] = 0
+                    slot.update(broker_backoff=0, retry_at=0)
                     self.event('retired', slot_id=slot['slot_id'], run=str(node['path']), last_error=result.get('error'), **cleanup)
                 slot['jobs_served'] += (node['node'] or {}).get('telemetry', {}).get('jobs_served', 0)
                 self.active.remove(node)
@@ -433,7 +458,7 @@ class Pool:
                 # identically measured guests cannot be assigned to the wrong slot.
                 if any(n['node'] is None and not n.get('readiness_failed') for n in self.active):
                     break
-                if (not slot['stopped'] and len(active) < 2 and not any(n['node'] is None for n in active)
+                if (not slot['stopped'] and now >= slot.get('retry_at', 0) and len(active) < 2 and not any(n['node'] is None for n in active)
                         and (slot['retry_pending'] or should_replace(active, now, self.args.replace_after))):
                     try:
                         if self.args.pool_root:
@@ -448,7 +473,7 @@ class Pool:
                     except MacOccupied:
                         self.event('waiting_for_other_lane', slot_id=slot['slot_id'])
                     except BrokerUnavailable:
-                        self.event('waiting_for_broker', slot_id=slot['slot_id'])
+                        self.retry_broker(slot, self.last_broker_error)
                     break
 
     def snapshot(self):
