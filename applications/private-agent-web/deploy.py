@@ -91,9 +91,8 @@ def main():
     parser.add_argument("--url", default=WEBHOST)
     parser.add_argument("--operator-token-sha256", required=True)
     parser.add_argument("--page-env", type=Path, required=True, help="Existing private page environment JSON, including email receiver configuration")
-    parser.add_argument("--release-tag", help="Explicit production release tag pointing at clean HEAD")
     args = parser.parse_args()
-    ref = source_ref(APP.parents[1], args.target, args.release_tag)
+    ref = source_ref(APP.parents[1], args.target)
     if args.target != "staging" and (args.skip_registry_publication or args.staging_origin != STAGING_HOST):
         raise ValueError("staging deployment options require --target staging")
     if not args.skip_registry_publication and not args.registry_account:

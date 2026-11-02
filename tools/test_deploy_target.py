@@ -44,15 +44,6 @@ class SourceGateTests(unittest.TestCase):
             second=source_ref(repo, 'staging')
             with self.assertRaisesRegex(ValueError, 'contained'):
                 source_ref(repo, 'production')
-            git('tag', 'private-agent-v0.4.0', first)
-            with self.assertRaisesRegex(ValueError, 'exactly at HEAD'):
-                source_ref(repo, 'production', 'private-agent-v0.4.0')
-            git('tag', 'private-agent-v0.4.1', second)
-            self.assertEqual(source_ref(repo, 'production', 'private-agent-v0.4.1'), second)
-            (repo/'untracked').write_text('unreleased')
-            with self.assertRaisesRegex(ValueError, 'clean'):
-                source_ref(repo, 'production', 'private-agent-v0.4.1')
-            (repo/'untracked').unlink()
             git('update-ref', 'refs/remotes/origin/main', second)
             self.assertEqual(source_ref(repo, 'production'), second)
             git('checkout', '-q', '--detach', first)

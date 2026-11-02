@@ -273,6 +273,3 @@ and voucher file to recover an interrupted response. The broker applies each
 nonce once; the recipient refreshes credit to continue its saved conversation.
 A new wallet starts with its gifted amount; refreshing credit preserves it.
 Existing grants and spending survive broker restarts unchanged.
-
-For an approved release branch, pass `--release-tag private-agent-vVERSION`.
-The tag must point exactly at the clean source HEAD.

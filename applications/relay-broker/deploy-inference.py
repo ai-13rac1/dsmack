@@ -54,7 +54,7 @@ def write_json(path, value):
 
 
 def prepare(args):
-    ref = source_ref(REPO, args.target, getattr(args, "release_tag", None))
+    ref = source_ref(REPO, args.target)
     project = project_name("relay-broker", args.target)
     config = json.loads(args.config.read_text())
     if args.target != "staging" and args.staging_origin != STAGING_HOST:
@@ -153,7 +153,7 @@ def client(url, admin=None):
 
 
 def deploy(args):
-    ref = source_ref(REPO, args.target, getattr(args, "release_tag", None))
+    ref = source_ref(REPO, args.target)
     project_name_value = project_name("relay-broker", args.target)
     manifest = json.loads((args.prepared / "relay-broker.manifest.json").read_text())
     required = {"name": project_name_value, "runtime": "deno", "entry": "applications/relay-broker/server.ts",
@@ -226,8 +226,6 @@ def main():
     p.add_argument("--evidence", type=Path, required=True)
     p.add_argument("--apply", action="store_true")
     p.set_defaults(run=deploy)
-    for command_parser in sub.choices.values():
-        command_parser.add_argument("--release-tag", help="Explicit production release tag pointing at clean HEAD")
     args = parser.parse_args()
     args.run(args)
 
