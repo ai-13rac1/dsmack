@@ -48,3 +48,13 @@ export async function saveChat(storage, session, agent) {
   });
   return data;
 }
+
+export async function exportChats(storage, sessionId) {
+  const metadata = sessionId
+    ? [await storage.sessions.getMetadata(sessionId)]
+    : await storage.sessions.getAllMetadata();
+  const lines = await Promise.all(metadata.map(async metadata => JSON.stringify({
+    data: await storage.sessions.get(metadata.id), metadata,
+  })));
+  return lines.length ? lines.join("\n") + "\n" : "";
+}

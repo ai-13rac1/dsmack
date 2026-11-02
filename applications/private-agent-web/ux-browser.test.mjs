@@ -142,6 +142,45 @@ try {
         await ready(page);
         await page.locator('user-message').getByText('Please inspect my code.',{exact:true}).waitFor();
         assert(await page.locator('#alert').isHidden());
+        const sessionId = await page.locator('#chat').getAttribute('data-session-id');
+        const feedbackText = 'The answer needs a concrete example.';
+        const feedback = page.locator('assistant-message message-feedback').first();
+        await feedback.getByRole('button', { name: 'Feedback', exact: true }).click();
+        await feedback.getByRole('textbox', { name: 'Message feedback' }).fill(feedbackText);
+        await feedback.getByRole('button', { name: 'Save', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('#chat').dataset.saved === 'true');
+        await ready(page);
+        await page.locator('.feedback-note').getByText(feedbackText, { exact: true }).waitFor();
+        const download = async name => {
+          const pending = page.waitForEvent('download');
+          await page.getByRole('button', { name, exact: true }).click();
+          const file = await pending;
+          assert.match(file.suggestedFilename(), /\.jsonl$/);
+          return (await readFile(await file.path(), 'utf8')).trim().split('\n').map(JSON.parse);
+        };
+        await page.locator('#sessions').click();
+        const [exported] = await download('Current chat');
+        assert.equal(exported.data.id, sessionId);
+        assert.equal(exported.metadata.messageCount, exported.data.messages.length);
+        const [record] = exported.data.feedback;
+        assert.equal(record.text, feedbackText);
+        assert.equal(record.sessionId, sessionId);
+        assert.equal(exported.data.messages[record.messageIndex].role, 'assistant');
+        assert.match(record.id, /^[0-9a-f-]{36}$/);
+        assert(record.pageVersion && record.createdAt);
+        assert.equal(record.guestId, undefined);
+        await page.keyboard.press('Escape');
+        await page.locator('#new-chat').click();
+        await page.waitForFunction(id => document.querySelector('#chat').dataset.sessionId !== id, sessionId);
+        await page.locator('#sessions').click();
+        const all = await download('All chats');
+        assert.equal(all.length, 2);
+        assert.deepEqual(all.find(r => r.data.id === sessionId).data.feedback, exported.data.feedback);
+        const [current] = await download('Current chat');
+        assert.notEqual(current.data.id, sessionId);
+        assert(!current.data.messages.some(message => ['user', 'assistant', 'toolResult'].includes(message.role)));
+        await page.keyboard.press('Escape');
+        assert(!JSON.stringify(calls).includes(feedbackText), 'feedback and exports stay in the browser');
         assert(!calls.some(call=>call.path.startsWith('/sync/')),'local-only chats never request chain sync');
       } else if (['empty', 'busy'].includes(scenario)) {
         await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /No Mac is free/).waitFor();
@@ -162,6 +201,13 @@ try {
         assert.equal(settled.length, 1); assert.equal(settled[0].isError, true);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · running' }).count(), 0);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · failed' }).count(), 1);
+        if (scenario === 'guest') {
+          const toolFeedback = page.locator('tool-message message-feedback');
+          await toolFeedback.getByRole('button', { name: 'Feedback', exact: true }).click();
+          await toolFeedback.getByRole('textbox', { name: 'Message feedback' }).fill('Please explain the tool failure.');
+          await toolFeedback.getByRole('button', { name: 'Save', exact: true }).click();
+          await toolFeedback.getByText('Please explain the tool failure.', { exact: true }).waitFor();
+        }
         if (scenario === 'orphan') {
           await page.locator('#retry-reply').click();
           await page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming && document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2);

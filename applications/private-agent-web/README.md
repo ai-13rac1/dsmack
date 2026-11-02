@@ -107,6 +107,10 @@ counter and digest to the pinned Base Sepolia SyncHeads contract. Each browser
 checks the contract code, on-chain head, signature and ciphertext CID before
 loading remote sessions. Refresh loads changes made on another device.
 
+Saved chats offers Export chats for the current conversation or all saved sessions
+as JSONL, including messages, tool calls, tool outputs, metadata and feedback.
+Use Feedback below a message or tool result to save a note with that conversation.
+
 Email recovery verifies the gate's Intel TDX quote, OS boot measurements, event
 log and quoted ECDH key in the browser. It checks the webhost app's live Base
 mainnet DstackApp/KMS authorization through two independent public RPCs at one
