@@ -15,6 +15,8 @@ consecutive minutes sends one Matrix alert, followed by one recovery message.
 A missing sample breaks the three-minute streak. State and logs live in
 `~/.local/state/dsmack-directory/`. The existing Fractal Hermes credentials stay
 on Fractal. Failed notifications remain retryable.
+Installation sends a clearly marked failure/recovery test pair to verify Matrix
+delivery with the on-host credentials.
 
 Each completed check pings the independent zed watchdog, including observations
 that correctly report an outage. Directory heartbeats have a seven-minute
