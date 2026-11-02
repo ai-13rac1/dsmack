@@ -356,8 +356,6 @@ export class GuestSession {
   async end() {
     if (this.client && this.workspaceReady) await this.save();
     clearInterval(this.poll);
-    await this.client?.close(); this.client = null;
-    await this.peer?.stop(); this.peer = null;
     if (this.lease) {
       let result = await this.api("/agent/end", await walletBody(this.credit, "agent-end", { sessionId: this.lease.sessionId }));
       for (let attempt = 0; result.active && attempt < 10; attempt++) {
@@ -373,5 +371,7 @@ export class GuestSession {
       }
       else this.poll = setInterval(() => this.status().catch(e => this.changed({ state: "error", error: e.message })), 5000);
     }
+    await this.client?.close(); this.client = null;
+    await this.peer?.stop(); this.peer = null;
   }
 }
