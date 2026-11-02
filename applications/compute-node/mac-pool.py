@@ -156,7 +156,7 @@ def main():
     p.add_argument('--pool-version',required=True,help='source commit used by this staged pool')
     p.add_argument('--operator',type=Path,default=Path.home()/'.dsmack/operator.json')
     p.add_argument('--max-slots',type=int,help='cap the operator guest slots for this pool')
-    p.add_argument('--coexist-pool',type=Path,action='append',default=[],help='allow guests owned by this other launcher state')
+    p.add_argument('--coexist-pool',type=Path,action='append',default=[],help='allow guests owned by launcher state anywhere beneath this directory')
     p.add_argument('--relay-port',type=int,default=4019)
     p.add_argument('--broker',required=True);p.add_argument('--index',required=True)
     p.add_argument('--publication-rpc',action='append',help='ordered publication RPC; repeat for several providers')

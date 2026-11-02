@@ -133,7 +133,7 @@ def preflight(state, active, pool_root=None, coexist_pools=()):
         owned_sessions.update(str(path) for path in pool_root.glob('*/run-*/session.json'))
     allowed_sessions = set()
     for root in coexist_pools:
-        allowed_sessions.update(str(path.resolve()) for path in root.glob('*/run-*/session.json'))
+        allowed_sessions.update(str(path.resolve()) for path in root.glob('**/run-*/session.json'))
     for line in result.stdout.splitlines():
         pid = int(line.split()[0])
         command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
@@ -543,7 +543,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--operator', type=Path, default=Path.home()/'.dsmack/operator.json')
     parser.add_argument('--max-slots', type=int, help='cap the operator guest slots for this pool')
-    parser.add_argument('--coexist-pool', type=Path, action='append', default=[], help='allow guests owned by this other launcher state')
+    parser.add_argument('--coexist-pool', type=Path, action='append', default=[], help='allow guests owned by launcher state anywhere beneath this directory')
     parser.add_argument('--publisher-key', type=Path)
     parser.add_argument('--publisher-address')
     parser.add_argument('--pool-version', help='source commit used by this staged pool')

@@ -118,10 +118,10 @@ class PoolTests(unittest.TestCase):
                 for instance in (first,second):
                     if instance.boot_lock:instance.boot_lock.close()
 
-    def test_coexisting_pool_allows_only_its_exact_guest_sessions(self):
+    def test_coexisting_pool_allows_guest_sessions_of_rotated_generations_beneath_it(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            session = root/'guests-1/run-1/session.json'
+            session = root/'pool-2/guests-1/run-1/session.json'
             session.parent.mkdir(parents=True)
             session.touch()
             process = SimpleNamespace(returncode=0, stdout='1 dsmack-runner\n')
