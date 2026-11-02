@@ -48,6 +48,7 @@ async function sharedAppFrame(page) {
   }
 }
 async function run(name, kind, fn) {
+  if (process.env.BOUNDARY_CASE && process.env.BOUNDARY_CASE !== name) return;
   const ctx = await browser.newContext(),
     page = await ctx.newPage(),
     errors = [];
@@ -288,6 +289,15 @@ try {
       },
     );
   }
+  await run("duplicate-chat-reconciles-before-offering-retry", "duplicate", async (page, calls) => {
+    await send(page, "Reply once.");
+    await alert(page, "REQUEST_ALREADY_DISPATCHED");
+    await page.locator("#retry-reply").waitFor({state:"visible"});
+    await page.waitForFunction(() => !document.querySelector("#chat")?.session?.state.isStreaming);
+    assert.match(await page.locator("#reply-recovery").innerText(), /Reconcile provider usage/);
+    assert.equal(calls.filter(call => call.path === "/inference/chat").length, 1);
+    assert(calls.some(call => call.path === "/inference/usage"), "Duplicate delivery reconciles the original dispatch");
+  });
   await run("remaining-credit-reduces-encrypted-output-limit", "partial", async (page, calls) => {
     await send(page, "FIRST_VISIT_PROMPT_STAYS_ENCRYPTED");
     await alert(page, "SYNTHETIC_STOP");

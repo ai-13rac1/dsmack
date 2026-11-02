@@ -124,6 +124,11 @@ export async function backend(page, kind) {
       });
     }
     if (path === "/inference/chat" && kind === "ux") return route.continue();
+    if (path === "/inference/chat" && kind === "duplicate") {
+      return respond({code:"REQUEST_ALREADY_DISPATCHED", status:"already-dispatched",
+        sessionId:body.sessionId, inferenceId:"original-request",
+        message:"This request was already dispatched. Reconcile provider usage before sending again."}, 202);
+    }
     if (path === "/inference/chat") {
       return respond({
         error: {
