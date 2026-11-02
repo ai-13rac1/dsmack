@@ -40,6 +40,8 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     category = "request";
     message = `Model request refused: ${detail} Send again. If it happens again, try another browser.`;
   }
+  const ref = error?.ref;
+  if (typeof ref === "string" && /^[0-9a-f]{8}$/.test(ref) && !message.includes(`ref ${ref}`)) message += ` (ref ${ref})`;
   return { category, message, retryable, interrupted };
 }
 

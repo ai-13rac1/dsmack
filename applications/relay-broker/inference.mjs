@@ -501,6 +501,7 @@ export class Inference {
       response = await this.provider.chatEncrypted({
         key: this.provider.apiKey,
         model: this.cfg.model,
+        nonce: r.nonce,
         body: r.body,
         headers: r.headers,
         attestation: session.attestation,

@@ -89,7 +89,7 @@ export function brokerStream(
       finish();
     };
     withInferenceWallet(credit, async () => {
-      let session;
+      let session, requestRef;
       const billing = answer.billing = { dispatched: false, settled: false, reservedNanoUsd: "0" };
       const reportError = error || (() => {});
       const reconcile = async () => {
@@ -249,6 +249,7 @@ export function brokerStream(
           body,
           headers,
         });
+        requestRef = signed.nonce.slice(0, 8);
         Object.assign(billing, { reservedNanoUsd: String(reservation(body)),
           baselineModelSpentNanoUsd: session.modelSpentNanoUsd, wallet: credit.address.toLowerCase(),
           sessionId: session.sessionId });
@@ -334,6 +335,7 @@ export function brokerStream(
         answer.stopReason = toolCalls.size ? "toolUse" : finishReason === "length" ? "length" : "stop";
         try { await reconcile(); } catch (e) { billing.pendingReason = e.message; reportError(e); }
       } catch (e) {
+        if (requestRef && !e.ref) e.ref = requestRef;
         // Publish the interruption immediately. Ledger reconciliation can take
         // time after a broker restart, but it must not hide the partial answer.
         if (!options.signal?.aborted) {
@@ -355,6 +357,7 @@ export function brokerStream(
         answer.errorCode = e.code;
       }
       try { await options.onBilling?.({ ...billing }); } catch (e) {
+        if (requestRef && !e.ref) e.ref = requestRef;
         answer.stopReason = "error";
         answer.failure ||= replyFailure(e, { partial: answer.content.some(part => part.type === "text" && part.text) });
         answer.errorMessage = (answer.failure.interrupted ? "Interrupted · " : "") + answer.failure.message;

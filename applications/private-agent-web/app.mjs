@@ -98,36 +98,42 @@ function details(parent, title, value) {
   return d;
 }
 async function api(path, body, opts = {}) {
-  const response = await fetch(cfg.broker + path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    redirect: "error",
-    cache: "no-store",
-    signal: opts.signal,
-  });
-  if (!response.ok) {
-    const raw = await response.text();
-    let e;
-    try {
-      e = JSON.parse(raw).error;
-    } catch {}
-    const code = typeof e === "object" ? e?.code : e;
-    const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
-      ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
-      : code === "starter_sandbox_used"
-      ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
-      : code === "diagnostic_node_not_live"
-      ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
-      : undefined;
-    const message = friendly || (typeof e === "object"
-      ? [e?.code, e?.message].filter(Boolean).join(": ")
-      : e) ||
-      `Broker ${path}: HTTP ${response.status}`;
-    throw Object.assign(new Error(message), { code, status: response.status,
-      retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
+  const ref = typeof body?.nonce === "string" && /^[0-9a-f]{32}$/.test(body.nonce) ? body.nonce.slice(0, 8) : undefined;
+  try {
+    const response = await fetch(cfg.broker + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: body === undefined ? {} : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      redirect: "error",
+      cache: "no-store",
+      signal: opts.signal,
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      let e;
+      try {
+        e = JSON.parse(raw).error;
+      } catch {}
+      const code = typeof e === "object" ? e?.code : e;
+      const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
+        ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
+        : code === "starter_sandbox_used"
+        ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
+        : code === "diagnostic_node_not_live"
+        ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
+        : undefined;
+      const message = friendly || (typeof e === "object"
+        ? [e?.code, e?.message].filter(Boolean).join(": ")
+        : e) ||
+        `Broker ${path}: HTTP ${response.status}`;
+      throw Object.assign(new Error(message), { code, status: response.status,
+        retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
+    }
+    return opts.stream ? response : await response.json();
+  } catch (error) {
+    if (ref) { error.ref = ref; error.message += ` (ref ${ref})`; }
+    throw error;
   }
-  return opts.stream ? response : response.json();
 }
 function render() {
   $("wallet").textContent = credit.address || "Choose Start fresh or recover your wallet.";

@@ -298,6 +298,16 @@ try {
     assert.equal(calls.filter(call => call.path === "/inference/chat").length, 1);
     assert(calls.some(call => call.path === "/inference/usage"), "Duplicate delivery reconciles the original dispatch");
   });
+  await run("request-ref-survives-actionable-rendering", "valid", async (page, calls) => {
+    await send(page, "Reply once.");
+    await alert(page, "SYNTHETIC_STOP");
+    const request = calls.find(call => call.path === "/inference/chat");
+    const text = await page.locator("#alert").innerText();
+    const ref = request.body.nonce.slice(0, 8);
+    assert(text.includes("ref " + ref));
+    assert.equal(text.match(new RegExp("ref " + ref, "g")).length, 1);
+    assert.match(text, /Retry/);
+  });
   await run("remaining-credit-reduces-encrypted-output-limit", "partial", async (page, calls) => {
     await send(page, "FIRST_VISIT_PROMPT_STAYS_ENCRYPTED");
     await alert(page, "SYNTHETIC_STOP");

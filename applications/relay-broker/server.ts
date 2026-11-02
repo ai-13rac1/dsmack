@@ -1,3 +1,4 @@
+import { nonceRef, errorCode, requestLog } from "./request-log.mjs";
 import { ArtifactShares, artifactStoreRemote } from "./artifact-shares.mjs";
 import { Continuity } from "./continuity.mjs";
 import { Workspaces } from "./workspaces.mjs";
@@ -177,7 +178,7 @@ function page(b: Broker) {
   }</html>`;
 }
 
-async function body(req: Request, maximum = 150000) {
+async function readBody(req: Request, maximum: number, observation: { ref: string | null }) {
   if (!req.body) throw new Refused("JSON body required", 400);
   let size = 0;
   const chunks = [];
@@ -197,6 +198,7 @@ async function body(req: Request, maximum = 150000) {
     if (!r || typeof r !== "object" || Array.isArray(r)) {
       throw new Error("object required");
     }
+    observation.ref = nonceRef(r.nonce);
     return r;
   } catch {
     throw new Refused("JSON object required", 400);
@@ -205,6 +207,7 @@ async function body(req: Request, maximum = 150000) {
 
 let state: ReturnType<typeof load> | undefined;
 export default async function handler(req: Request, ctx: Context) {
+  const started = performance.now();
   const loading = state ??= load(ctx);
   let broker;
   try {
@@ -213,12 +216,35 @@ export default async function handler(req: Request, ctx: Context) {
     // Shared-runtime promotion can briefly remove the project GetKey socket.
     // A rejected startup must not poison every later request after it returns.
     if (state === loading) state = undefined;
+    requestLog("broker_failure", { ref: null, code: "STARTUP_FAILED", status: 500, started, requestBytes: 0, responseBytes: null });
     throw error;
   }
-  return await handleRequest(req, broker, ctx);
+  return await handleRequest(req, broker, ctx, started);
 }
 
-export async function handleRequest(req: Request, b: Broker, ctx?: Context) {
+export async function handleRequest(req: Request, b: Broker, ctx?: Context, started = performance.now()) {
+  const observation = { ref: null as string | null, requestBytes: 0 };
+  if (req.body) req = new Request(req, { body: req.body.pipeThrough(new TransformStream({
+    transform(chunk, controller) { observation.requestBytes += chunk.byteLength; controller.enqueue(chunk); },
+  })) });
+  let response;
+  try { response = await dispatchRequest(req, b, ctx, observation); }
+  catch (error) {
+    requestLog("broker_failure", { ...observation, code: "INTERNAL_ERROR", status: 500, started, responseBytes: null });
+    throw error;
+  }
+  if (observation.ref) response.headers.set("x-request-ref", observation.ref);
+  if (response.status < 400) return response;
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let code = "REQUEST_REFUSED";
+  try { code = errorCode(JSON.parse(new TextDecoder().decode(bytes)).error?.code); }
+  catch { /* Non-JSON refusal: only status and byte count are logged. */ }
+  requestLog("broker_failure", { ...observation, code, status: response.status, started, responseBytes: bytes.byteLength });
+  return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
+async function dispatchRequest(req: Request, b: Broker, ctx: Context | undefined, observation: { ref: string | null }) {
+  const body = (request: Request, maximum = 150000) => readBody(request, maximum, observation);
   const path = new URL(req.url).pathname;
   if(path==="/tunnels")return await tunnelIndex(req,ctx?.env.OPERATOR_TOKEN_SHA256,ctx?.dataDir?ctx.dataDir+"/tunnels.json":undefined);
   if(path==="/fleet" || ["/fleet/ownership", "/fleet/link", "/fleet/unlink", "/fleet/revoke-provisioner"].includes(path))return await fleet(req,b.cfg.payments?.escrow,ctx?.dataDir?ctx.dataDir+"/fleet.json":undefined);

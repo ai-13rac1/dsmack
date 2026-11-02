@@ -74,3 +74,14 @@ test('duplicate delivery and invalid provider JSON identify recovery actions and
   assert.equal(failure.retryable, true);
   assert.match(replyFailure(Error('BAD_REQUEST: invalid message')).message, /BAD_REQUEST.*Send again/);
 });
+
+test('request refs survive actionable provider, replay and network error rendering exactly once', () => {
+  for (const code of ['PROVIDER_UNAVAILABLE','REQUEST_ALREADY_DISPATCHED','BAD_REQUEST']) {
+    const failure=replyFailure(Object.assign(Error(`${code}: refused (ref 1234abcd)`),{code,ref:'1234abcd'}));
+    assert.match(failure.message,/ref 1234abcd/);
+    assert.equal(failure.message.match(/ref 1234abcd/g).length,1);
+    assert.match(failure.message,/Retry|Send again/);
+  }
+  const broken=replyFailure(Object.assign(Error('connection lost'),{ref:'1234abcd',status:502}),{partial:true});
+  assert.match(broken.message,/Retry.*ref 1234abcd/);
+});
