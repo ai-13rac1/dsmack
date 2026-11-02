@@ -135,6 +135,12 @@ VENV/bin/python applications/compute-node/mac-pool.py \
   --index https://pod.dstack.soc1024.com/private-agent/tunnels
 ```
 
+For a second pool, use its own state, operator file, relay and publisher keys,
+`--max-slots 1 --relay-port 4020 --coexist-pool OTHER_STATE`. The slot cap
+also applies after SIGHUP. Pack its workload with a distinct host proxy port
+(e.g. `http://192.168.127.254:18485`); the launcher reads that measured port.
+The relay binary accepts `-port PORT`. Each slot can overlap two generations.
+
 Stop with `kill -TERM LAUNCHER_PID`. It drains owned guests, preserves logs,
 assertions, original result disks and signed receipts, retires temporary disks,
 clears its discovery hints, and stops its relay, tunnel and helper. Each

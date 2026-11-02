@@ -14,7 +14,7 @@ class MacWorkloadTests(unittest.TestCase):
         return workload.manifest(ROOT/'applications/compute-node/testdata/compose-manifest.json',
             'sha256:'+'01'*32, Path(workload.__file__), RELAY,
             'https://pod.dstack.soc1024.com/relay-broker', '02'*32, '03'*32, seconds,
-            'http://192.168.127.254:18484', **kwargs)
+            kwargs.pop('proxy', 'http://192.168.127.254:18484'), **kwargs)
 
     def test_mac_mode_has_no_dns_pin_or_direct_network_route(self):
         measured = json.loads(self.generate(tunnel_index=INDEX))
@@ -28,6 +28,14 @@ class MacWorkloadTests(unittest.TestCase):
         self.assertEqual(node['command'][1], RELAY)
         self.assertEqual(env['ADMIT_SECONDS'], '360')
         self.assertTrue({'egress-checks','gateway-log'}.issubset({a['name'] for a in measured['outputs']['artifacts']}))
+
+    def test_second_pool_uses_its_own_measured_proxy_port(self):
+        measured = json.loads(self.generate(tunnel_index=INDEX, proxy='http://192.168.127.254:18485'))
+        node = json.loads(measured['docker_compose_file'])['services']['node']
+        self.assertEqual(node['environment']['HTTPS_PROXY'], 'http://192.168.127.254:18485')
+        self.assertEqual(measured['network']['egress'][0]['port'], 18485)
+        with self.assertRaisesRegex(ValueError, 'host-loopback CONNECT proxy'):
+            self.generate(tunnel_index=INDEX, proxy='http://other.example:18485')
 
     def test_hour_guest_binds_lifetime_and_paid_run_to_its_measured_compose(self):
         payments = {'runSeconds': 3600}
