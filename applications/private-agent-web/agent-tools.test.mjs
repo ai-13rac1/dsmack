@@ -27,6 +27,27 @@ test.after(() => rm(temporary, { recursive: true, force: true }));
 const encoder = new TextEncoder();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+test("end tells the broker to release the stay before closing its retained MCP stream", async () => {
+  let ended = false, saved = false, closed = false;
+  const session = new GuestSession({ cfg: {}, conversationId: "ending",
+    credit: { address: "public-wallet", signer: { signMessage: async () => "signature" } },
+    changed: () => {}, workspace: { save: async () => { saved = true; }, latest: async () => null },
+    api: async path => {
+      assert.equal(path, "/agent/end"); assert(saved); assert(!closed);
+      ended = true; return { active: false };
+    },
+  });
+  session.lease = { sessionId: "held-stay" };
+  session.workspaceReady = true;
+  session.client = { close: async () => {
+    assert(ended, "the guest retains its MCP stream until the broker ends the stay");
+    closed = true;
+  } };
+  session.peer = { stop: async () => { assert(closed); } };
+  await session.end();
+  assert.equal(session.lease, null); assert.equal(session.client, null);
+});
+
 async function readAdmission(stream) {
   const iterator = stream[Symbol.asyncIterator]();
   let bytes = new Uint8Array();
