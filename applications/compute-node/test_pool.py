@@ -243,6 +243,20 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(instance.slots[0]['broker_backoff'], 60)
             self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
 
+    def test_broker_challenge_transport_error_retries_without_a_guest_strike(self):
+        for message in ['Get "https://broker.example/payments/challenge": dial tcp: connection refused',
+                        'payment challenge: HTTP 503']:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); instance = self.instance(root)
+                instance.active = [self.failed_node(root/'failed')]
+                error = pool.error_details(message, 'guest_stderr')
+                with patch.object(pool, 'guest_result', return_value={'error': error}), \
+                        patch.object(pool, 'guest_closed', return_value=True), \
+                        patch.object(pool, 'preserve_and_retire', return_value={}):
+                    instance.tick()
+                self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
+                self.assertEqual(instance.slots[0]['broker_backoff'], 60)
+
     def test_readiness_does_not_erase_failed_guest_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             instance = self.instance(Path(tmp)); instance.slots[0]['consecutive_failures'] = 2

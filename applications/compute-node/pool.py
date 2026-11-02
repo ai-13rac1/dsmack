@@ -158,6 +158,11 @@ def error_details(message, stage, **fields):
         request_stage = 'broker_registration' if match[1].endswith('/nodes') else match[1]
         details.update(stage=request_stage if stage in ('node_gateway_error', 'guest_stderr') else stage, status=int(match[2]),
                        body=ast.literal_eval(match[3]))
+    elif re.search(r'(?:Get|Post) "https?://[^\s"]+/(?:payments/challenge|nodes)"', message):
+        if stage in ('node_gateway_error', 'guest_stderr'):
+            details['stage'] = 'broker_registration'
+    elif match := re.search(r'payment challenge: HTTP (\d+)', message):
+        details.update(stage='broker_registration', status=int(match[1]))
     return details
 
 
