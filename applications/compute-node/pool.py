@@ -41,7 +41,7 @@ def hardware():
             'cores': int(sysctl('hw.ncpu'))}
 
 
-def operator_config(path, host):
+def operator_config(path, host, max_slots=None):
     config = json.loads(path.read_bytes())
     from heartbeat import operator_region
     operator_region(path)
@@ -53,6 +53,10 @@ def operator_config(path, host):
     for name, value, minimum in fields:
         if type(value) is not int or value < minimum:
             raise ValueError(f'operator {name} must be an integer >= {minimum}')
+    if max_slots is not None:
+        if type(max_slots) is not int or max_slots < 1:
+            raise ValueError('max slots must be a positive integer')
+        config['max_guests'] = min(config['max_guests'], max_slots)
     guests, size, reserve = config['max_guests'], config['guest'], config['reserve']
     wanted_mem = guests * size['mem_mib']
     total_mem = host['mem_bytes'] // (1 << 20)
@@ -117,7 +121,7 @@ def should_replace(active, now, replace_after):
     return not serving or now - max(n['started'] for n in serving) >= replace_after
 
 
-def preflight(state, active, pool_root=None):
+def preflight(state, active, pool_root=None, coexist_pools=()):
     free = shutil.disk_usage(state).free
     if free < 12 * (1 << 30):
         raise RuntimeError('less than 12 GiB free on Mac')
@@ -127,10 +131,13 @@ def preflight(state, active, pool_root=None):
     owned_sessions = {str(n['path']/'session.json') for n in active}
     if pool_root:
         owned_sessions.update(str(path) for path in pool_root.glob('*/run-*/session.json'))
+    allowed_sessions = set()
+    for root in coexist_pools:
+        allowed_sessions.update(str(path.resolve()) for path in root.glob('*/run-*/session.json'))
     for line in result.stdout.splitlines():
         pid = int(line.split()[0])
         command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
-        if not owned_sessions.intersection(shlex.split(command)):
+        if not (owned_sessions | allowed_sessions).intersection(shlex.split(command)):
             raise MacOccupied('another lane owns the active Mac VM; waiting')
     return {'free_bytes': free, 'owned_runner_sessions': sorted(owned_sessions)}
 
@@ -284,7 +291,7 @@ class Pool:
         self.launched = 0
         self.stopping = False
         self.hardware = hardware()
-        self.config = operator_config(args.operator, self.hardware)
+        self.config = operator_config(args.operator, self.hardware, getattr(args, 'max_slots', None))
         self.slots = [{'slot_id': i, 'consecutive_failures': 0, 'last_error': None,
                        'retry_pending': False, 'stopped': False, 'jobs_served': 0}
                       for i in range(self.config['max_guests'])]
@@ -354,7 +361,7 @@ class Pool:
             return None
 
     def launch(self, slot):
-        check = preflight(self.args.state, self.active, self.args.pool_root)
+        check = preflight(self.args.state, self.active, self.args.pool_root, self.args.coexist_pool)
         nodes = self.nodes()
         if nodes is None:
             raise BrokerUnavailable()
@@ -528,6 +535,8 @@ class Pool:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--operator', type=Path, default=Path.home()/'.dsmack/operator.json')
+    parser.add_argument('--max-slots', type=int, help='cap the operator guest slots for this pool')
+    parser.add_argument('--coexist-pool', type=Path, action='append', default=[], help='allow guests owned by this other launcher state')
     parser.add_argument('--publisher-key', type=Path)
     parser.add_argument('--publisher-address')
     parser.add_argument('--pool-version', help='source commit used by this staged pool')
@@ -557,7 +566,7 @@ def main():
             or max(args.replace_after, args.seconds-args.replace_after) + args.readiness_timeout >= args.seconds-args.drain_seconds):
         parser.error('two-slot replacement must attest before admission closes, lifetime <=3600s')
     args.runner, args.workload, args.state, args.repo = [p.resolve() for p in (args.runner, args.workload, args.state, args.repo)]
-    manifest = validate_config(args.runner, args.workload, operator_config(args.operator, hardware()))
+    manifest = validate_config(args.runner, args.workload, operator_config(args.operator, hardware(), args.max_slots))
     measured = json.loads(manifest['docker_compose_file'])['services']['node']
     if int(measured['command'][2]) != args.seconds or int(measured['environment']['ADMIT_SECONDS']) != args.seconds-args.drain_seconds:
         parser.error('pool lifetime and admission must match measured compose')

@@ -14,9 +14,9 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
       ? "ARTIFACT_BUDGET_EXHAUSTED: Artifact credit used up. Increase its allowed model budget before trying again."
       : "CREDIT_EXHAUSTED: Chat credit used up. Check your chat credit before trying again.";
     retryable = false;
-  } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|Usage is unresolved/.test(code || detail)) {
+  } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY|Usage is unresolved/.test(code || detail)) {
     category = "credit";
-    message = "USAGE_PENDING: Chat credit is waiting for NEAR AI's metered usage. Use Reconcile provider usage, then Retry; another request cannot start until it settles.";
+    message = `${code || "USAGE_PENDING"}: ${/REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY/.test(code || "") ? "This message was already sent. " : ""}Chat credit is waiting for NEAR AI's metered usage. Use Reconcile provider usage, then Retry; another request cannot start until it settles.`;
   } else if (/CREDIT_|ARTIFACT_BUDGET/.test(code || "")) {
     category = "credit";
     message = `Chat credit request refused (${code}). Check your wallet and available credit before trying again.`;
@@ -24,6 +24,9 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   } else if (online === false) {
     category = "offline";
     message = "You are offline. Reconnect to the internet, then Retry.";
+  } else if (/\[api\.invalid_input\]|invalid_json/.test(detail)) {
+    category = "provider";
+    message = `NEAR AI could not read the model request: ${detail} Send again. If it happens again, try another browser.`;
   } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
     category = "provider";
     message = `NEAR AI provider error${interrupted ? " interrupted this reply" : ""}. Wait a moment, then Retry.${code ? " (" + code + ")" : ""}`;
@@ -35,8 +38,7 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     if (error?.status) message += ` (Broker HTTP ${error.status}${code ? ", " + code : ""})`;
   } else {
     category = "request";
-    message = `Model request refused: ${detail} Check the reported issue before trying again.`;
-    retryable = false;
+    message = `Model request refused: ${detail} Send again. If it happens again, try another browser.`;
   }
   return { category, message, retryable, interrupted };
 }

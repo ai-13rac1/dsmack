@@ -20,6 +20,11 @@ class PoolTests(unittest.TestCase):
             host = {'mem_bytes': 64 << 30, 'cores': 14}
             path.write_text(json.dumps(config))
             self.assertEqual(pool.operator_config(path, host), config)
+            self.assertEqual(pool.operator_config(path, host, 1)['max_guests'], 1)
+            self.assertEqual(pool.operator_config(path, host, 8)['max_guests'], 4)
+            self.assertEqual(json.loads(path.read_bytes()), config)
+            with self.assertRaisesRegex(ValueError, 'positive integer'):
+                pool.operator_config(path, host, 0)
             config['max_guests'] = 20
             path.write_text(json.dumps(config))
             with self.assertRaisesRegex(ValueError, '81920 MiB.*physical 65536 MiB.*reserve 16384 MiB.*49152 MiB available.*20.*14 cores.*4.*10 available'):
@@ -112,6 +117,20 @@ class PoolTests(unittest.TestCase):
             finally:
                 for instance in (first,second):
                     if instance.boot_lock:instance.boot_lock.close()
+
+    def test_coexisting_pool_allows_only_its_exact_guest_sessions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            session = root/'guests-1/run-1/session.json'
+            session.parent.mkdir(parents=True)
+            session.touch()
+            process = SimpleNamespace(returncode=0, stdout='1 dsmack-runner\n')
+            with patch.object(pool.shutil, 'disk_usage', return_value=SimpleNamespace(free=20<<30)), \
+                    patch.object(pool.subprocess, 'run', return_value=process), \
+                    patch.object(pool.subprocess, 'check_output', return_value=f'runner hvf-v3 {session}'):
+                pool.preflight(root, [], coexist_pools=[root])
+                with self.assertRaises(pool.MacOccupied):
+                    pool.preflight(root, [], coexist_pools=[root/'other'])
 
     def test_host_exit_without_guest_closure_is_not_success(self):
         with tempfile.TemporaryDirectory() as tmp:

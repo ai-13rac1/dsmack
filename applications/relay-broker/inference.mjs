@@ -56,6 +56,7 @@ export class Inference {
       "model and integer inference limits are required",
     );
     this.sessions = new Map();
+    this.preparations = new Map();
     this.activeRequests = new Set();
   }
   configured() {
@@ -186,6 +187,8 @@ export class Inference {
       "wallet signature does not verify",
       403,
     );
+    const repeatable = ["prepare", "chat"].includes(action);
+    const requestHash = repeatable ? hex(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(canonical(unsigned))))) : undefined;
     await this.payments.syncBalance?.(wallet);
     await this.payments.serial(async () => {
       const state = this.payments.state;
@@ -221,19 +224,20 @@ export class Inference {
       check(!a.exitRequestedAt || ["credit", "usage", "agent-status", "agent-end"].includes(action),
         "ACCOUNT_EXITING", "prepaid account is closing", 403);
       check(
-        !Object.hasOwn(a.nonces, r.nonce),
+        !Object.hasOwn(a.nonces, r.nonce) ||
+          (repeatable && a.nonces[r.nonce].requestHash === requestHash),
         "REQUEST_REPLAY",
         "wallet request nonce already used",
         409,
       );
       const nonces = Object.fromEntries(
-        Object.entries(a.nonces).filter(([, at]) => at >= this.now() - 240),
+        Object.entries(a.nonces).filter(([, at]) => (at.issuedAt ?? at) >= this.now() - 240),
       );
       await this.save({
         ...next,
         inferenceCredit: {
           ...state.inferenceCredit,
-          [wallet]: { ...a, nonces: { ...nonces, [r.nonce]: r.issuedAt } },
+          [wallet]: { ...a, nonces: { ...nonces, [r.nonce]: repeatable ? { issuedAt: r.issuedAt, requestHash } : r.issuedAt } },
         },
       });
     });
@@ -300,6 +304,17 @@ export class Inference {
   }
   async prepare(r) {
     const wallet = await this.authorized(r, "prepare");
+    for (const [key, entry] of this.preparations) {
+      if (entry.expiresAt < this.now()) this.preparations.delete(key);
+    }
+    const key = wallet + ":" + r.nonce;
+    if (!this.preparations.has(key)) this.preparations.set(key, {
+      expiresAt: r.issuedAt + 240,
+      result: this.prepareSession(r, wallet),
+    });
+    return await this.preparations.get(key).result;
+  }
+  async prepareSession(r, wallet) {
     this.configured();
     check(
       /^[0-9a-f]{64}$/.test(r.attestationNonce),
@@ -417,8 +432,11 @@ export class Inference {
   async chat(r) {
     const wallet = await this.authorized(r, "chat");
     this.configured();
-    let session, localId;
+    let session, localId, duplicate;
     await this.payments.serial(async () => {
+      duplicate = Object.values(this.payments.state.inferenceRequests ?? {})
+        .find(request => request.wallet === wallet && request.requestNonce === r.nonce);
+      if (duplicate) return;
       const a = this.account(wallet);
       check(
         !a.pending,
@@ -456,6 +474,7 @@ export class Inference {
           [localId]: {
             wallet,
             sessionId: r.sessionId,
+            requestNonce: r.nonce,
             status: "sent",
             ...(session.artifactId !== undefined ? { artifactId: session.artifactId } : {}),
             reservedNanoUsd: String(reserve),
@@ -469,6 +488,13 @@ export class Inference {
       session.consumed = true;
       this.sessions.delete(r.sessionId);
     });
+    if (duplicate) return Response.json({
+      code: "REQUEST_ALREADY_DISPATCHED",
+      status: "already-dispatched",
+      sessionId: duplicate.sessionId,
+      inferenceId: duplicate.inferenceId,
+      message: "This request was already dispatched. Reconcile provider usage before sending again.",
+    }, { status: 202 });
     this.activeRequests.add(localId);
     let response;
     try {
