@@ -24,6 +24,7 @@ import {
   store,
   walletBody,
 } from "./credit.mjs";
+import { loadProvider, saveProvider, directModel, modelBadge, modelPrivacy, providerStream, checkProvider, anthropicModels, defaultAnthropicModel } from "./model-provider.mjs";
 import { brokerStream, PRIVACY } from "./inference.mjs";
 import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
@@ -50,6 +51,7 @@ let keys, sync, continuity, cfg, sharedLink, sharedBundle, activeArtifactView,
   currentSession,
   unsubscribeChat,
   lastSave = Promise.resolve(),
+  selectedModel,
   chatBusy = false;
 async function startupStep(name, task) {
   const start = performance.now();
@@ -156,7 +158,7 @@ function renderChatCredit() {
 }
 async function claimChatCredit() {
   require(
-    quote?.configured,
+    selectedModel || quote?.configured,
     "Private inference is not configured on this broker.",
   );
   await credit.checkBroker(api);
@@ -187,10 +189,10 @@ async function refreshServices() {
     "Broker does not offer browser-encrypted NEAR chat.",
   );
   setModel();
-  $("service").textContent = quote.configured
+  $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
     ? "Chat ready · " + PRIVACY
     : "Private inference is not configured.";
-  if (credit.signer && quote.configured) await startupStep("wallet-credit", claimChatCredit);
+  if (credit.signer && (quote.configured || selectedModel)) await startupStep("wallet-credit", claimChatCredit);
   $("pins").textContent = JSON.stringify(
     {
       chainId: 84532,
@@ -238,13 +240,13 @@ async function usage() {
   }
 }
 function renderEvidence(e) {
-  if (e.type !== "guest-run") $("verified").hidden = e.browser?.fullQuoteVerifiedBy !== "browser";
+  if (e.type !== "guest-run") $("verified").hidden = !!selectedModel || e.browser?.fullQuoteVerifiedBy !== "browser";
   $("attestations").replaceChildren();
   details($("attestations"), "Latest verification details", e);
 }
 function setModel() {
   if (!agent) return;
-  agent.state.model = (!quote && currentSession?.model) || {
+  agent.state.model = selectedModel || {
     id: quote?.model || "unavailable",
     name: quote?.model || "NEAR TEE model",
     api: "dsmack-inference",
@@ -256,8 +258,12 @@ function setModel() {
     contextWindow: quote?.contextWindow || 1048576,
     maxTokens: quote?.maxOutputTokens || 512,
   };
-  $("model").textContent = agent.state.model.id === "unavailable"
-    ? "NEAR TEE model · unavailable" : agent.state.model.id;
+  $("model").textContent = modelBadge(agent.state.model);
+  $("model-privacy").textContent = modelPrivacy(agent.state.model);
+  if (quote) $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
+    ? "Chat ready · " + PRIVACY : "Private inference is not configured.";
+  $("verified").hidden = !!selectedModel || !currentSession.dsmack.evidence.some(e =>
+    e.model === agent.state.model.id && e.browser?.fullQuoteVerifiedBy === "browser");
   chat?.requestUpdate();
 }
 async function saveCurrentChat(publish = false) {
@@ -303,6 +309,7 @@ function setChatBusy(busy) {
   if (!busy) $("capacity-status").textContent = "";
   $("new-chat").disabled = busy;
   $("sessions").disabled = busy;
+  $("provider-settings").disabled = busy;
   renderReplyRecovery();
 }
 function renderReplyRecovery() {
@@ -313,7 +320,7 @@ function renderReplyRecovery() {
   if (!reply) return;
   panel.dataset.category = reply.failure.category;
   $("reply-recovery-message").textContent = reply.failure.message;
-  $("reply-recovery-charge").textContent = meteredReply(reply.billing);
+  $("reply-recovery-charge").textContent = reply.provider === "near" ? meteredReply(reply.billing) : "Model tokens are billed by your provider. Guest seconds use chat credit.";
   $("retry-reply").disabled = chatBusy || agent.state.isStreaming;
 }
 async function retryReply() {
@@ -322,10 +329,12 @@ async function retryReply() {
   setChatBusy(true);
   clearError();
   try {
-    $("reply-recovery-charge").textContent = "Checking the broker's metered charge before retrying…";
-    const ledger = await usage();
-    require(!ledger.pendingInferenceId, "USAGE_PENDING: Provider cost is still pending.");
-    if (settleInterruptedReply(reply, ledger)) await saveCurrentChat();
+    if (reply.provider === "near") {
+      $("reply-recovery-charge").textContent = "Checking the broker's metered charge before retrying…";
+      const ledger = await usage();
+      require(!ledger.pendingInferenceId, "USAGE_PENDING: Provider cost is still pending.");
+      if (settleInterruptedReply(reply, ledger)) await saveCurrentChat();
+    }
     await chat.onBeforeSend();
     require(agent === originalAgent && retryCandidate(agent.state.messages) === reply,
       "This conversation changed. Select its latest interrupted reply before retrying.");
@@ -542,6 +551,13 @@ async function useSession(data) {
     artifacts.panel.onArtifactsChange = () => { $("open-artifacts").hidden = !artifacts.panel.artifacts.size; };
     $("open-artifacts").onclick = openArtifacts;
   }
+  const systemPrompt = ({ model = agent.state.model, runtime }) => buildAgentPrompt({
+    runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. " + modelPrivacy(model) + "\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
+    environment: guest.environment || measuredEnvironment(),
+    attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
+    repository: "Initial repository snapshot; use the read tool for current workspace contents.\n" + [...repoFiles].map(([name, text]) => `${name}\n${text.length < 4096 ? text : "Read this file with the read tool."}`).join("\n"),
+  }) + "\n\n" + ARTIFACT_PROMPT;
+  const preflight = (context, signal) => guest.preflight(context, signal, policy.manifest);
   agent = new Agent({
     initialState: {
       systemPrompt: "You are the dsmack private agent. Use your tools to inspect and change the attested workspace.",
@@ -550,8 +566,8 @@ async function useSession(data) {
       tools: [...guest.tools(), ...(artifacts ? [artifacts.tool] : [])],
     },
     toolExecution: "sequential",
-    getApiKey: () => undefined,
-    streamFn: brokerStream({
+    getApiKey: provider => provider === "near" ? undefined : storage.providerKeys.get(provider),
+    streamFn: providerStream({ preflight, systemPrompt, startedAt: currentSession.createdAt, near: brokerStream({
       credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error,
       billingUpdated: async answer => {
         const reply = artifactAgent.state.messages.findLast(message => message.role === "assistant" &&
@@ -563,15 +579,9 @@ async function useSession(data) {
         await lastSave;
         if (currentSession === sessionRecord) { chat.requestUpdate(); renderReplyRecovery(); }
       },
-      preflight: (context, signal) => guest.preflight(context, signal, policy.manifest),
+      preflight, systemPrompt,
       startedAt: currentSession.createdAt,
-      systemPrompt: ({ checked, runtime }) => buildAgentPrompt({
-        runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. Model calls remain encrypted from the browser to the NEAR model TEE.\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
-        environment: guest.environment || measuredEnvironment(),
-        attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
-        repository: "Initial repository snapshot; use the read tool for current workspace contents.\n" + [...repoFiles].map(([name, text]) => `${name}\n${text.length < 4096 ? text : "Read this file with the read tool."}`).join("\n"),
-      }) + "\n\n" + ARTIFACT_PROMPT,
-    }),
+    }) }),
   });
   artifactAgent = agent;
   if (artifacts) {
@@ -647,8 +657,54 @@ async function loadSharedViewer() {
     dsmack: { evidence: [], wallet: credit.address.toLowerCase(), sharedArtifactCid: sharedLink.cid } });
   return true;
 }
+function initProviderSettings() {
+  const dialog = $("provider-dialog"), form = $("provider-form"), provider = $("provider-choice");
+  const showFields = () => {
+    $("provider-fields").hidden = provider.value === "near";
+    $("provider-url-label").hidden = provider.value !== "openai-compatible";
+    $("provider-model").setAttribute("list", provider.value === "anthropic" ? "anthropic-models" : "");
+  };
+  for (const id of anthropicModels) {
+    const option = document.createElement("option"); option.value = id; $("anthropic-models").append(option);
+  }
+  provider.onchange = () => {
+    $("provider-key").value = "";
+    $("provider-model").value = provider.value === "anthropic" ? defaultAnthropicModel : "";
+    $("provider-url").value = "https://api.openai.com/v1";
+    showFields();
+  };
+  action("provider-settings", () => {
+    provider.value = selectedModel?.provider === "anthropic" ? "anthropic" : selectedModel ? "openai-compatible" : "near";
+    $("provider-model").value = selectedModel?.id || defaultAnthropicModel;
+    $("provider-url").value = selectedModel?.baseUrl || "https://api.openai.com/v1";
+    $("provider-key").value = "";
+    $("provider-error").textContent = "";
+    showFields(); dialog.showModal();
+  });
+  $("provider-cancel").onclick = () => dialog.close();
+  dialog.addEventListener("close", () => { $("provider-key").value = ""; });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    $("provider-save").disabled = true;
+    $("provider-cancel").disabled = true;
+    $("provider-error").textContent = "";
+    try {
+      const model = provider.value === "near" ? undefined : directModel(provider.value, $("provider-model").value, $("provider-url").value);
+      const key = $("provider-key").value.trim() || (model && await storage.providerKeys.get(model.provider)) || "";
+      if (model) await checkProvider(model, key);
+      await saveProvider(storage, model, key);
+      selectedModel = model;
+      setModel();
+      await saveCurrentChat();
+      dialog.close();
+    } catch (e) { $("provider-error").textContent = e.message; }
+    finally { $("provider-save").disabled = false; $("provider-cancel").disabled = false; }
+  };
+}
 async function initChat() {
   storage = createChatStorage();
+  selectedModel = await loadProvider(storage);
+  initProviderSettings();
   persistSession = createSessionPersistence({ storage, save: saveChat });
   if (keys.bundle && cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
   chat = new AgentInterface();
@@ -678,18 +734,20 @@ async function initChat() {
   retry.addEventListener("click", retryReply);
   recoveryPanel.append(message, charge, retry);
   $("chat-host").before(recoveryPanel);
-  // The broker authenticates the wallet and holds the provider key in its CVM.
+  // NEAR uses wallet credit; direct providers resolve browser-only keys in Agent.
   chat.onApiKeyRequired = async () => true;
   chat.onBeforeSend = async () => {
     clearError();
     await credit.checkBroker(api);
-    require(quote?.configured, "Private inference is not configured on this broker.");
+    if (!selectedModel) require(quote?.configured, "Private inference is not configured on this broker.");
     await ensureWallet();
-    if (credit.chatCredit.pendingInferenceId) await usage();
-    require(!credit.chatCredit.pendingInferenceId,
-      "Usage is unresolved. Reconcile provider usage before sending another message.");
-    require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
-      "CREDIT_EXHAUSTED: Chat credit used up.");
+    if (!selectedModel) {
+      if (credit.chatCredit.pendingInferenceId) await usage();
+      require(!credit.chatCredit.pendingInferenceId,
+        "Usage is unresolved. Reconcile provider usage before sending another message.");
+      require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
+        "CREDIT_EXHAUSTED: Chat credit used up.");
+    }
     if (!await storage.settings.get("chat.persistenceRequested")) {
       await storage.requestPersistence();
       await storage.settings.set("chat.persistenceRequested", true);

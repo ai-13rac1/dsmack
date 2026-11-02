@@ -138,3 +138,24 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
     await new Promise(done => listener.close(done)); await remote.stop();
   }
 });
+
+test("user-key guest tool calls retain PromptGuard preflight and complete assistant response", async () => {
+  const calls = [], assistant = { role: "assistant", provider: "anthropic", content: [
+    { type: "text", text: "Read the requested file." },
+    { type: "toolCall", id: "read-one", name: "read", arguments: { path: "note.txt" } },
+  ] };
+  const session = new GuestSession({ catalog: [{ name: "read", description: "Read", inputSchema: { type: "object" } }] });
+  session.node = { policy: { monitor: { name: "baseline-pg2" } } };
+  session.environment = { commandTimeoutSeconds: 120 };
+  session.record = { agent: { state: { model: { provider: "anthropic" }, messages: [assistant] } } };
+  session.ensure = async () => ({ callTool: async call => { calls.push(call); return { content: [{ type: "text", text: "File contents" }] }; } });
+  session.status = async () => {};
+  const manifest = encoder.encode(JSON.stringify({ docker_compose_file: JSON.stringify({ services: { node: {
+    environment: { DSMACK_MONITOR_POLICY: JSON.stringify({ name: "baseline-pg2" }) },
+  } } }) }));
+  await session.preflight({ messages: [{ role: "user", content: "Inspect my file." }] }, undefined, manifest);
+  for (let i = 0; i < 2; i++) await session.tools()[0].execute("read-" + i, { path: "note.txt" });
+  assert.equal(calls.filter(call => call.name === "dsmack_monitor").length, 3);
+  for (const call of calls.filter(call => call.name === "read"))
+    assert.equal(call._meta["dsmack/monitorResponse"], JSON.stringify(assistant.content));
+});
