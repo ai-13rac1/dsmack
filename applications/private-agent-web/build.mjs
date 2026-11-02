@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { build } from "esbuild";
 import { generateManifest } from "./bridge/generate.mjs";
+import { nearRequestBodyPlugin } from "./near-browser-build.mjs";
 import { piPromptPlugin } from "../compute-node/pi-browser-build.mjs";
 import { copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -13,7 +14,7 @@ await rm(resolve(app, "dist"), { recursive: true, force: true });
 await mkdir(resolve(app, "dist"), { recursive: true });
 await build({
   absWorkingDir: app,
-  plugins: [piPromptPlugin()],
+  plugins: [piPromptPlugin(), nearRequestBodyPlugin()],
   entryPoints: { app: "app.mjs", "wallet-bootstrap": "wallet-bootstrap.mjs" },
   bundle: true,
   format: "esm",
