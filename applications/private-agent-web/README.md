@@ -3,22 +3,37 @@
 The chain directory uses two matching replies from three configured HTTPS RPC
 hosts at a pinned block hash. Configure `chainDirectory.rpcs` in `config.json`.
 
-Run the same discovery checks from cron on the monitoring host with Deno and
-the existing local Hermes Matrix environment:
+Install the directory and capacity checks on Fractal from the laptop:
 
 ```sh
-python3 applications/private-agent-web/install-directory-health.py
+bash applications/private-agent-web/install-fractal-health.sh
 ```
 
-This installs checks every five minutes for production and staging. State and
-logs live in `~/.local/state/dsmack-directory/`. Each outage posts once to
-`#fractal-ops`, then posts once on recovery. Failed notifications leave the
-previous state in place for the next run. To check a separate target:
+Directory checks run every five minutes; capacity checks read the public broker
+`/network` every minute. Zero ready slots or zero online Macs for three
+consecutive minutes sends one Matrix alert, followed by one recovery message.
+A missing sample breaks the three-minute streak. State and logs live in
+`~/.local/state/dsmack-directory/`. The existing Fractal Hermes credentials stay
+on Fractal. Failed notifications remain retryable.
+
+Each completed check pings the independent zed watchdog, including observations
+that correctly report an outage. Directory heartbeats have a seven-minute
+deadline; capacity heartbeats have a three-minute deadline. The watchdog binds
+to zed's Nebula interface and uses its existing Alertmanager Telegram receiver
+for missing-heartbeat and recovery notifications. Checks arm on their first ping.
+Install the watchdog on zed with:
 
 ```sh
-deno run --allow-net --allow-read --allow-write --allow-run \
-  applications/private-agent-web/directory-health.mjs test CONFIG_URL \
-  /absolute/test-state.json /absolute/directory-notify.sh
+python3 applications/private-agent-web/install-heartbeat-watch.py
+```
+
+To check a separate target:
+
+```sh
+deno run --allow-net --allow-read --allow-write --allow-run --allow-env \
+  applications/private-agent-web/directory-health.mjs capacity staging NETWORK_URL \
+  /absolute/test-state.json /absolute/directory-notify.sh \
+  http://192.168.100.3:18766/ping/staging/capacity
 ```
 
 Dsmack Agent is one Pi conversation with `bash`, `read`, `write` and `edit`

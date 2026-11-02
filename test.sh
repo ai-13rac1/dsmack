@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 for d in tests tools base-vm runner-vm applications/{agent-turns,bounties,bounty-dashboard,browser-p2p,pilot-client,compute-node,libp2p-attest,mac-ownership} contracts/payments dstack-compat; do
     python3 -m pytest -q -p no:cacheprovider "$d"
 done
+python3 -m pytest -q -p no:cacheprovider applications/private-agent-web/test_heartbeat_watch.py
 node --test $(find applications dstack-compat \( -name node_modules -o -name primary-original -o -path applications/relay-broker -o -path applications/payments -o -path applications/private-agent-web -o -path applications/operator-fleet/chain.test.mjs \) -prune -o \( -name '*.test.mjs' -o -name '*.test.cjs' -o -name 'test_*.mjs' \) -print)
 for d in applications/{compute-node,egress-relay,libp2p-attest}/peer applications/{egress-policy,payments/guest}; do
     (cd "$d" && go test ./...)
