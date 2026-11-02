@@ -138,3 +138,33 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
     await new Promise(done => listener.close(done)); await remote.stop();
   }
 });
+
+
+test("a failed broker status read cannot hide a completed command or run it twice", async () => {
+  let commands = 0;
+  const changes = [];
+  const session = new GuestSession({ catalog: [{ name: "bash", description: "bash", inputSchema: {} }], changed: change => changes.push(change) });
+  session.node = { policy: {} }; session.environment = { commandTimeoutSeconds: 120 };
+  session.ensure = async () => ({ callTool: async () => { commands++; return { content: [{ type: "text", text: "completed command" }] }; } });
+  session.status = async () => { throw new TypeError("Failed to fetch"); };
+  const result = await session.tools()[0].execute("call", { command: "echo completed" });
+  assert.equal(commands, 1);
+  assert.equal(result.content[0].text, "completed command");
+  assert.match(changes[0].error, /browser lost its connection/);
+});
+
+test("a failed guest connection invalidates its chain directory before the next attempt", async () => {
+  let invalidated = 0;
+  const session = new GuestSession({});
+  const error = Error("guest disconnected");
+  session.connectGuest = async () => { throw error; };
+  await assert.rejects(session.connect({ invalidateDirectory: () => invalidated++ }), value => value === error);
+  assert.equal(invalidated, 1);
+});
+
+
+test("a browser failure before Bash starts names the browser connection instead of returning bare Failed to fetch", async () => {
+  const session = new GuestSession({ catalog: [{ name: "bash", description: "bash", inputSchema: {} }] });
+  session.ensure = async () => { throw new TypeError("Failed to fetch"); };
+  await assert.rejects(session.tools()[0].execute("call", { command: "echo completed" }), /browser lost its connection.*background/);
+});

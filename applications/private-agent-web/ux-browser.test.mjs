@@ -101,7 +101,7 @@ try {
         const all = new URL(route.request().url()).searchParams.get('all');
         return route.fulfill({ status: all ? 200 : 503, headers: publicHeaders,
           body: JSON.stringify(all ? scenario === 'empty' ? [] : [{ kind: 'compute', available: false }]
-            : { error: { code: 'FLEET_BUSY', retryAfterSeconds: 2 } }) });
+            : { error: { code: scenario === 'empty' ? 'FLEET_EMPTY' : 'FLEET_BUSY', retryAfterSeconds: 2 } }) });
       });
       await send(page, 'Please inspect my code.');
       await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') || document.querySelector('#chat').session.state.isStreaming);
@@ -144,7 +144,7 @@ try {
         assert(await page.locator('#alert').isHidden());
         assert(!calls.some(call=>call.path.startsWith('/sync/')),'local-only chats never request chain sync');
       } else if (['empty', 'busy'].includes(scenario)) {
-        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /No Mac is free/).waitFor();
+        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /All Macs are busy, retry in 2 seconds/).waitFor();
         assert.doesNotMatch(await page.locator('#capacity-status').innerText(), /FLEET_BUSY|broker|Busy,/);
         await page.screenshot({ path: resolve(evidence, `${scenario}-${width}.png`), fullPage: true });
         await cancel(); await waitIdle();

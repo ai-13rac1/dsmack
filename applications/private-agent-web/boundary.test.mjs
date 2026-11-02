@@ -141,6 +141,53 @@ try {
     assert(new Set(rpcReads).size === 2, "Both chain providers are checked");
     assert(!calls.some(r => r.path === "/agent/open" || r.path.includes("/attestation")));
   });
+  await run("broker-reads-retry-once-and-signed-posts-never-resend", "valid", async (page) => {
+    let reads = 0, writes = 0;
+    await page.route("**/relay-broker/inference/quote", route => ++reads === 1 ? route.abort("internetdisconnected") : route.fallback());
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
+    await page.locator("#refresh").evaluate(button => { button.closest("details").open = true; });
+    await page.locator("#refresh").click();
+    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    assert.equal(reads, 2);
+    await page.route("**/relay-broker/inference/credit", route => { writes++; return route.abort("internetdisconnected"); });
+    await page.locator("#refresh").click();
+    await alert(page, "browser lost its connection");
+    assert.equal(writes, 1, "a signed credit request is sent once");
+    assert.doesNotMatch(await page.locator("#alert").textContent(), /broker.*restarting/i);
+    reads = 0;
+    await page.route("**/relay-broker/inference/quote", route => { reads++; return route.abort("internetdisconnected"); });
+    await page.locator("#refresh").click();
+    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    assert.equal(reads, 2, "a second browser failure ends the read");
+    assert.equal(writes, 1);
+  });
+  await run("switch-wallet-requires-recovery-and-confirmation", "valid", async (page) => {
+    const wallet = await page.locator("#wallet").textContent();
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
+    await page.locator("#use-another-device").click();
+    await page.locator("#switch-wallet").click();
+    await page.locator("#continuity-status").getByText(/Save a passkey or add a recovery email.*before switching/).waitFor();
+    assert.equal(await page.locator("#wallet").textContent(), wallet);
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open("dsmack-private-agent", 1);
+      open.onsuccess = () => {
+        const db = open.result, tx = db.transaction("wallet", "readwrite");
+        tx.objectStore("wallet").put("saved-credential", "continuity.passkey");
+        tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error);
+      };
+    }));
+    await Promise.all([page.waitForEvent("dialog").then(dialog => dialog.dismiss()), page.locator("#switch-wallet").click()]);
+    await page.waitForFunction(() => !document.querySelector("#switch-wallet").disabled);
+    assert.equal(await page.locator("#wallet").textContent(), wallet);
+    await Promise.all([page.waitForEvent("dialog").then(dialog => { assert.match(dialog.message(), /saved passkey or email/); return dialog.accept(); }),
+      page.locator("#switch-wallet").click()]);
+    await page.locator("#welcome").waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.documentElement.dataset.ready === "true");
+    assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
+    await page.locator("#start-fresh").click();
+    await page.waitForFunction(() => document.querySelector("#wallet").textContent.startsWith("0x"));
+    assert.notEqual(await page.locator("#wallet").textContent(), wallet);
+  });
   await run("first-visit-requires-choice", "valid", async (page, calls) => {
     assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
     assert(await page.locator("#start-fresh").isVisible());
@@ -200,6 +247,7 @@ try {
   await run("inline-tool-output-and-markdown-code-visible", "valid", async (page, calls) => {
     // Display fixture derived from the real guest script journey. No model or
     // guest request is made: this catches missing custom-element registration.
+    await page.locator("#sync-status").getByText("Chats checked and synced.", { exact: true }).waitFor({ state: "attached" });
     await page.evaluate(async () => {
       const chat = document.querySelector("agent-interface"), model = chat.session.state.model;
       const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
