@@ -44,7 +44,8 @@ class SourceGateTests(unittest.TestCase):
             second=source_ref(repo, 'staging')
             with self.assertRaisesRegex(ValueError, 'contained'):
                 source_ref(repo, 'production')
-            git('update-ref', 'refs/remotes/origin/main', second)
+            git('update-ref', 'refs/remotes/origin/main', first)
+            git('update-ref', 'refs/heads/main', second)
             self.assertEqual(source_ref(repo, 'production'), second)
             git('checkout', '-q', '--detach', first)
             self.assertEqual(source_ref(repo, 'production'), first)

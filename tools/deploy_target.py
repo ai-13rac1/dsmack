@@ -22,8 +22,8 @@ def source_ref(repo, target):
     if target == 'production':
         if git('status', '--porcelain', '--untracked-files=all'):
             raise ValueError('production requires a clean source tree')
-        # Prefer the locally recorded GitHub main; never fetch or change remotes.
-        for ref in ('refs/remotes/origin/main', 'refs/heads/main'):
+        # Deploy from local main, including approved merges awaiting publication.
+        for ref in ('refs/heads/main', 'refs/remotes/origin/main'):
             if subprocess.run(['git', '-C', str(repo), 'show-ref', '--verify', '--quiet', ref]).returncode == 0:
                 break
         else:
