@@ -2,6 +2,7 @@
 """Watch check deadlines independently and send alerts to the existing Alertmanager."""
 import argparse
 from datetime import datetime, timezone
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
@@ -115,7 +116,7 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     while True:
         try: watch.tick()
-        except Exception as error:
+        except (OSError, HTTPException) as error:
             print(json.dumps({'event': 'heartbeat_notification_failed', 'error': str(error)}), flush=True)
         time.sleep(15)
 
