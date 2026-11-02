@@ -16,3 +16,6 @@ else
   rsync -a --bwlimit=20000 "$HOME/.deno/bin/deno" "fractal:$remote/bin/deno"
   ssh fractal "python3 ~/$remote/applications/private-agent-web/install-directory-health.py --deno \$HOME/$remote/bin/deno"
 fi
+# Confirm the real Matrix transport on the credential-owning host.
+ssh fractal "~/$remote/applications/private-agent-web/directory-notify.sh 'Dsmack staging capacity FAILED (installation test): simulated empty target.'"
+ssh fractal "~/$remote/applications/private-agent-web/directory-notify.sh 'Dsmack staging capacity RECOVERED (installation test): notification transport verified.'"
