@@ -41,7 +41,7 @@ def hardware():
             'cores': int(sysctl('hw.ncpu'))}
 
 
-def operator_config(path, host):
+def operator_config(path, host, max_slots=None):
     config = json.loads(path.read_bytes())
     from heartbeat import operator_region
     operator_region(path)
@@ -53,6 +53,10 @@ def operator_config(path, host):
     for name, value, minimum in fields:
         if type(value) is not int or value < minimum:
             raise ValueError(f'operator {name} must be an integer >= {minimum}')
+    if max_slots is not None:
+        if type(max_slots) is not int or max_slots < 1:
+            raise ValueError('max slots must be a positive integer')
+        config['max_guests'] = min(config['max_guests'], max_slots)
     guests, size, reserve = config['max_guests'], config['guest'], config['reserve']
     wanted_mem = guests * size['mem_mib']
     total_mem = host['mem_bytes'] // (1 << 20)
@@ -117,7 +121,7 @@ def should_replace(active, now, replace_after):
     return not serving or now - max(n['started'] for n in serving) >= replace_after
 
 
-def preflight(state, active, pool_root=None):
+def preflight(state, active, pool_root=None, coexist_pools=()):
     free = shutil.disk_usage(state).free
     if free < 12 * (1 << 30):
         raise RuntimeError('less than 12 GiB free on Mac')
@@ -127,10 +131,13 @@ def preflight(state, active, pool_root=None):
     owned_sessions = {str(n['path']/'session.json') for n in active}
     if pool_root:
         owned_sessions.update(str(path) for path in pool_root.glob('*/run-*/session.json'))
+    allowed_sessions = set()
+    for root in coexist_pools:
+        allowed_sessions.update(str(path.resolve()) for path in root.glob('*/run-*/session.json'))
     for line in result.stdout.splitlines():
         pid = int(line.split()[0])
         command = subprocess.check_output(['ps', '-p', str(pid), '-o', 'command='], text=True)
-        if not owned_sessions.intersection(shlex.split(command)):
+        if not (owned_sessions | allowed_sessions).intersection(shlex.split(command)):
             raise MacOccupied('another lane owns the active Mac VM; waiting')
     return {'free_bytes': free, 'owned_runner_sessions': sorted(owned_sessions)}
 
@@ -152,6 +159,20 @@ def error_details(message, stage, **fields):
         details.update(stage=request_stage if stage in ('node_gateway_error', 'guest_stderr') else stage, status=int(match[2]),
                        body=ast.literal_eval(match[3]))
     return details
+
+
+def external_broker_error(error):
+    """Chain unavailability and transport failures cannot consume a guest strike."""
+    if not error:
+        return False
+    stage = error.get('stage', '')
+    message = error.get('error', '') + ' ' + error.get('body', '')
+    if not (stage.startswith('broker') or re.search(r'(?:POST |Post ").*/nodes', message)):
+        return False
+    return bool(re.search(r'RPC|quorum|stale/future finalized head|finalized block (?:stale|future)', message, re.I)
+                or error.get('status') in (408, 429, 502, 503, 504)
+                or (error.get('status') is None and re.search(
+                    r'connection refused|connection reset|timeout|timed out|no such host|dial tcp|network is unreachable|EOF', message, re.I)))
 
 
 def guest_result(run, debugfs):
@@ -270,7 +291,7 @@ class Pool:
         self.launched = 0
         self.stopping = False
         self.hardware = hardware()
-        self.config = operator_config(args.operator, self.hardware)
+        self.config = operator_config(args.operator, self.hardware, getattr(args, 'max_slots', None))
         self.slots = [{'slot_id': i, 'consecutive_failures': 0, 'last_error': None,
                        'retry_pending': False, 'stopped': False, 'jobs_served': 0}
                       for i in range(self.config['max_guests'])]
@@ -305,6 +326,12 @@ class Pool:
         with (self.args.state/'pool.jsonl').open('a') as log:
             log.write(json.dumps(record)+'\n')
 
+    def retry_broker(self, slot, error):
+        delay = min(900, max(60, slot.get('broker_backoff', 0) * 2))
+        slot.update(broker_backoff=delay, retry_at=time.monotonic()+delay,
+                    retry_pending=True, last_error=error)
+        self.event('broker_retry', slot_id=slot['slot_id'], retry_seconds=delay, last_error=error)
+
     def nodes(self):
         raw = b''
         status = None
@@ -334,7 +361,7 @@ class Pool:
             return None
 
     def launch(self, slot):
-        check = preflight(self.args.state, self.active, self.args.pool_root)
+        check = preflight(self.args.state, self.active, self.args.pool_root, self.args.coexist_pool)
         nodes = self.nodes()
         if nodes is None:
             raise BrokerUnavailable()
@@ -383,11 +410,11 @@ class Pool:
                 normal_timeout = (outputs.get('status') == 'cancelled'
                                   and (outputs.get('cancel') or {}).get('reason') == 'timeout'
                                   and (not result.get('error') or result['error'].get('terminal') is False))
+                closed = guest_closed(node['path'])
                 failed = (proc.returncode != 0 or node['node'] is None or node.get('readiness_failed')
-                          or not guest_closed(node['path']) or not (outputs.get('status') == 'completed' or normal_timeout))
+                          or not closed or not (outputs.get('status') == 'completed' or normal_timeout))
                 cleanup = preserve_and_retire(node['path'], self.args.repo)
                 if failed:
-                    slot['consecutive_failures'] += 1
                     slot['retry_pending'] = True
                     actual_error = result.get('error')
                     if not actual_error or actual_error.get('stage') == 'result_extraction':
@@ -399,11 +426,16 @@ class Pool:
                     self.remember_error({'at': int(time.time()), 'slot_id': slot['slot_id'], **slot['last_error']})
                     self.event('guest_failed', slot_id=slot['slot_id'], run=str(node['path']), consecutive_failures=slot['consecutive_failures'],
                                last_error=slot['last_error'], **cleanup)
-                    if slot['consecutive_failures'] >= 3:
-                        slot['stopped'] = True
-                        self.event('failure_limit', slot_id=slot['slot_id'], consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
+                    if closed and external_broker_error(slot['last_error']):
+                        self.retry_broker(slot, slot['last_error'])
+                    else:
+                        slot['consecutive_failures'] += 1
+                        if slot['consecutive_failures'] >= 3:
+                            slot['stopped'] = True
+                            self.event('failure_limit', slot_id=slot['slot_id'], consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
                 else:
                     slot['consecutive_failures'] = 0
+                    slot.update(broker_backoff=0, retry_at=0)
                     self.event('retired', slot_id=slot['slot_id'], run=str(node['path']), last_error=result.get('error'), **cleanup)
                 slot['jobs_served'] += (node['node'] or {}).get('telemetry', {}).get('jobs_served', 0)
                 self.active.remove(node)
@@ -433,7 +465,7 @@ class Pool:
                 # identically measured guests cannot be assigned to the wrong slot.
                 if any(n['node'] is None and not n.get('readiness_failed') for n in self.active):
                     break
-                if (not slot['stopped'] and len(active) < 2 and not any(n['node'] is None for n in active)
+                if (not slot['stopped'] and now >= slot.get('retry_at', 0) and len(active) < 2 and not any(n['node'] is None for n in active)
                         and (slot['retry_pending'] or should_replace(active, now, self.args.replace_after))):
                     try:
                         if self.args.pool_root:
@@ -448,7 +480,7 @@ class Pool:
                     except MacOccupied:
                         self.event('waiting_for_other_lane', slot_id=slot['slot_id'])
                     except BrokerUnavailable:
-                        self.event('waiting_for_broker', slot_id=slot['slot_id'])
+                        self.retry_broker(slot, self.last_broker_error)
                     break
 
     def snapshot(self):
@@ -503,6 +535,8 @@ class Pool:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--operator', type=Path, default=Path.home()/'.dsmack/operator.json')
+    parser.add_argument('--max-slots', type=int, help='cap the operator guest slots for this pool')
+    parser.add_argument('--coexist-pool', type=Path, action='append', default=[], help='allow guests owned by this other launcher state')
     parser.add_argument('--publisher-key', type=Path)
     parser.add_argument('--publisher-address')
     parser.add_argument('--pool-version', help='source commit used by this staged pool')
@@ -532,7 +566,7 @@ def main():
             or max(args.replace_after, args.seconds-args.replace_after) + args.readiness_timeout >= args.seconds-args.drain_seconds):
         parser.error('two-slot replacement must attest before admission closes, lifetime <=3600s')
     args.runner, args.workload, args.state, args.repo = [p.resolve() for p in (args.runner, args.workload, args.state, args.repo)]
-    manifest = validate_config(args.runner, args.workload, operator_config(args.operator, hardware()))
+    manifest = validate_config(args.runner, args.workload, operator_config(args.operator, hardware(), args.max_slots))
     measured = json.loads(manifest['docker_compose_file'])['services']['node']
     if int(measured['command'][2]) != args.seconds or int(measured['environment']['ADMIT_SECONDS']) != args.seconds-args.drain_seconds:
         parser.error('pool lifetime and admission must match measured compose')

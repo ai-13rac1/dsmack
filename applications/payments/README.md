@@ -12,6 +12,11 @@ the guest's first authenticated receipt is accepted. An unused grant costs zero.
 Set `payments.prices.S1.nanoUsdPerSecond` and `minimumSeconds: 60` in broker config.
 `payments.inferenceOperator` receives claims for provider inference costs.
 
+Set `payments.rpcs` to at least three independent RPC hosts. Every quorum read
+requires `floor(N / 2) + 1` matching replies from the configured list, even when
+some hosts are unavailable. `PAYMENTS_RPC_URLS`, a comma-separated list, selects
+providers when generating configuration with `configure.mjs`.
+
 The owner pins the broker once with `registerBroker` and registers immutable
 operator, unit, compose and image measurements with `registerNode`. The guest's
 in-memory secp256k1 receipt public key is bound by the fresh Apple assertion and

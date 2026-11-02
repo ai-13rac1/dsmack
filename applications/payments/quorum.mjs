@@ -1,10 +1,11 @@
-import { abi, CHAIN, keccak256, require, RPCS } from "./schema.mjs";
+import { abi, CHAIN, keccak256, require } from "./schema.mjs";
 
-// Every state read uses the same EIP-1898 block hash, with an honest 2/3 majority.
+// Every state read uses the same EIP-1898 block hash and a strict majority of
+// the configured hosts, even when some hosts are unavailable.
 export class Quorum {
   constructor(
     {
-      rpcs = RPCS,
+      rpcs,
       escrow,
       codeHash,
       now = () => Math.floor(Date.now() / 1000),
@@ -14,9 +15,9 @@ export class Quorum {
     },
   ) {
     require(
-      rpcs.length === 3 &&
-        new Set(rpcs.map((u) => new URL(u).hostname)).size === 3,
-      "three independent RPC hosts required",
+      Array.isArray(rpcs) && rpcs.length >= 3 &&
+        new Set(rpcs.map((u) => new URL(u).hostname)).size === rpcs.length,
+      "at least three independent RPC hosts required",
     );
     require(
       /^0x[0-9a-fA-F]{40}$/.test(escrow) &&
@@ -24,6 +25,7 @@ export class Quorum {
       "escrow and deployed code hash pins required",
     );
     Object.assign(this, { rpcs, escrow, codeHash, now, fetcher });
+    this.threshold = Math.floor(rpcs.length / 2) + 1;
     this.client = rpcProxy
       ? Deno.createHttpClient({ proxy: { url: rpcProxy } })
       : rpcIpv4
@@ -64,7 +66,7 @@ export class Quorum {
               group = groups.get(key) ?? { value, n: 0 };
             group.n++;
             groups.set(key, group);
-            if (group.n >= 2) {
+            if (group.n >= this.threshold) {
               done = true;
               controller.abort();
               resolve(group.value);
@@ -101,13 +103,12 @@ export class Quorum {
     const good = heads.filter((r) => r.status === "fulfilled").map((r) =>
       r.value
     );
-    require(good.length >= 2, "Base Sepolia finalized RPC quorum unavailable");
-    // Choose the highest height finalized by at least two providers. A lagging
-    // third endpoint must not roll payment visibility back to an older balance.
+    require(good.length >= this.threshold, "Base Sepolia finalized RPC quorum unavailable");
+    // Choose the highest height finalized by a majority of configured hosts.
     const heights = good.map((g) => BigInt(g.head.number)).sort((a, b) =>
       a > b ? -1 : a < b ? 1 : 0
     );
-    const height = heights[1];
+    const height = heights[this.threshold - 1];
     const headUrls = good.filter((g) => BigInt(g.head.number) >= height).map(
       (g) => g.url,
     );

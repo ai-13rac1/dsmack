@@ -11,7 +11,7 @@ require(deployment.chainId === CHAIN, "Base Sepolia deployment required");
 const cfg = {
   escrow: deployment.address,
   codeHash: deployment.runtimeKeccak,
-  rpcs: RPCS,
+  rpcs: Deno.env.get("PAYMENTS_RPC_URLS")?.split(",").map(url => url.trim()) ?? RPCS,
   rpcIpv4: true,
   fundingAddress: deployment.fundingWallet,
   grantSigner,

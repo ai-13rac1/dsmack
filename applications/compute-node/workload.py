@@ -25,13 +25,16 @@ def manifest(starter, digest, binary, relay, broker, key, cdhash, seconds, proxy
             or index.scheme != 'https' or index.hostname != url.hostname or index.port not in (None,443)
             or index.username or index.password or not index.path.startswith('/') or index.query or index.fragment):
         raise ValueError('Mac mode requires a same-host HTTPS broker and tunnel index')
-    if proxy != 'http://192.168.127.254:18484':
+    proxy_url = urlsplit(proxy)
+    if (proxy_url.scheme != 'http' or proxy_url.hostname != '192.168.127.254'
+            or not proxy_url.port or proxy_url.username or proxy_url.password
+            or proxy_url.path or proxy_url.query or proxy_url.fragment):
         raise ValueError('Mac mode requires the host-loopback CONNECT proxy')
     environment = {'HTTPS_PROXY':proxy,'BROKER_GATEWAY':'http://127.0.0.1:18080','TUNNEL_INDEX':tunnel_index}
     description = canonical(MONITORS[monitor]).decode()
     environment.update(DSMACK_MONITOR_POLICY=description,
                        DSMACK_MONITOR_HASH=hashlib.sha256(description.encode()).hexdigest())
-    egress = [{'destination': str(ipaddress.ip_network('192.168.127.254')), 'protocol':'tcp', 'port':18484}]
+    egress = [{'destination': str(ipaddress.ip_network('192.168.127.254')), 'protocol':'tcp', 'port':proxy_url.port}]
     guest = guest or {'mem_mib': 4096, 'vcpus': 1}
     if any(type(guest.get(k)) is not int or guest[k] < 1 for k in ('mem_mib', 'vcpus')):
         raise ValueError('guest mem_mib and vcpus must be positive integers')

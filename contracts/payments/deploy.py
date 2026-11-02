@@ -47,7 +47,7 @@ def wait_receipt(quorum, tx_hash):
     raise RuntimeError(f"receipt timeout; inspect transaction before rerunning: {tx_hash}")
 
 
-def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_reserve_wei=MIN_RESERVE_WEI, balance_block="finalized"):
+def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_reserve_wei=MIN_RESERVE_WEI, balance_block="finalized", rpc_call=call):
     # Pending nonce must agree too; a chainId=84532 signature cannot replay on mainnet.
     tx = {"chainId": CHAIN_ID, "nonce": int(quorum.read("eth_getTransactionCount", [account.address, "pending"]), 16),
           "value": value, "data": data}
@@ -58,7 +58,7 @@ def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_res
     if gas_price > 100_000_000_000:
         raise RuntimeError("gas price exceeds 100 gwei testnet cap")
     tx["gasPrice"] = gas_price
-    estimate = call(url, "eth_estimateGas", [{"from": account.address, "data": data,
+    estimate = rpc_call(url, "eth_estimateGas", [{"from": account.address, "data": data,
                         "value": hex(value), **({"to": tx["to"]} if to else {})}])
     tx["gas"] = int(estimate, 16) * 12 // 10
     if tx["gas"] > 5_000_000:
@@ -72,7 +72,7 @@ def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_res
     # Save the intended hash BEFORE sending so a timeout never encourages a blind resend.
     persist(output / f"{label}-transaction.json", {"hash": tx_hash, "chainId": CHAIN_ID,
                 "from": account.address, "to": to, "nonce": tx["nonce"], "value": value})
-    submitted = call(url, "eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()])
+    submitted = rpc_call(url, "eth_sendRawTransaction", ["0x" + signed.raw_transaction.hex()])
     if submitted.lower() != tx_hash.lower():
         raise RuntimeError("RPC returned a different transaction hash")
     print(f"{label}: {tx_hash}", flush=True)

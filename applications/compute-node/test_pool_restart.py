@@ -61,6 +61,18 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 pool_restart.replacement(path, 'relay')
 
+    def test_new_generations_keep_the_slot_cap_and_coexisting_pool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            start = Mock()
+            manager = pool_restart.Generations(Path(tmp), 'broker', Mock(), start, 'relay',
+                                               max_slots=1, coexist_pools=[Path('/production')])
+            config = dict(runner='/runner', workload='/workload', operator='/operator',
+                          seconds=3600, drain=480, replace=1830)
+            manager.launch(config)
+            command = start.call_args.args[0]
+            self.assertEqual(command[command.index('--max-slots')+1], '1')
+            self.assertEqual(command[command.index('--coexist-pool')+1], Path('/production'))
+
     def test_bad_configuration_leaves_serving_process_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
             start = Mock()

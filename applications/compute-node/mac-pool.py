@@ -155,24 +155,29 @@ def main():
     p.add_argument('--restart-timeout', type=float, default=300)
     p.add_argument('--pool-version',required=True,help='source commit used by this staged pool')
     p.add_argument('--operator',type=Path,default=Path.home()/'.dsmack/operator.json')
+    p.add_argument('--max-slots',type=int,help='cap the operator guest slots for this pool')
+    p.add_argument('--coexist-pool',type=Path,action='append',default=[],help='allow guests owned by this other launcher state')
+    p.add_argument('--relay-port',type=int,default=4019)
     p.add_argument('--broker',required=True);p.add_argument('--index',required=True)
-    p.add_argument('--publication-rpc',default='https://base-sepolia-rpc.publicnode.com')
+    p.add_argument('--publication-rpc',action='append',help='ordered publication RPC; repeat for several providers')
     p.add_argument('--ipfs-bin',type=Path);p.add_argument('--ipfs-car',type=Path);p.add_argument('--ipfs-state',type=Path)
     p.add_argument('--registry',required=True);p.add_argument('--publisher-address',required=True)
     a=p.parse_args()
     if any((a.ipfs_bin,a.ipfs_car,a.ipfs_state)) and not all((a.ipfs_bin,a.ipfs_car,a.ipfs_state)):p.error('IPFS needs --ipfs-bin, --ipfs-car and --ipfs-state')
-    config=operator_config(a.operator,hardware())
+    config=operator_config(a.operator,hardware(),a.max_slots)
+    if not 1 <= a.relay_port <= 65535:p.error('--relay-port must be 1..65535')
     manifest=json.loads((a.workload/'compose-manifest.json').read_bytes())
     measured_size(manifest,config)
     a.state=a.state.resolve()
     if not a.adopt_launcher:a.state.mkdir(parents=True,mode=0o700)
     node=json.loads(manifest['docker_compose_file'])['services']['node']
+    proxy_port=urlsplit(node['environment']['HTTPS_PROXY']).port
     expected_peer=node['command'][1].rsplit('/',1)[1]
     initial=release_config(a.runner,a.workload,a.operator,a.pool_version,expected_peer)
     for path in (a.relay,a.relay_key,a.cloudflared,a.publisher_key):
         if not path.is_file():raise FileNotFoundError(path)
     while not a.adopt_launcher:
-        try:preflight(a.state,[]);break
+        try:preflight(a.state,[],coexist_pools=a.coexist_pool);break
         except MacOccupied:print('waiting for the active Mac lane',flush=True);time.sleep(10)
     stopping=False;reload_requested=False;children=[];transports=[];logs=[];pools=None;handoff=None;published=False;published_entries=[]
     def stop(*_):
@@ -233,7 +238,9 @@ def main():
         return out
     def run_publication(out,chain):
         cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out]
-        if chain:cmd+=['--rpc',a.publication_rpc]
+        if chain:
+            for url in a.publication_rpc or ['https://base-sepolia-rpc.publicnode.com', 'https://base-sepolia.gateway.tenderly.co', 'https://sepolia.base.org']:
+                cmd+=['--rpc',url]
         subprocess.run([str(x) for x in cmd],check=True,timeout=480)
     def publish(entries,chain):
         if chain:publish_chain(entries,pending_path,prepare,lambda out:run_publication(out,True))
@@ -249,22 +256,24 @@ def main():
         else:
             if a.ipfs_bin:start([sys.executable,ROOT/'applications/private-agent-web/pin-mac.py','--ipfs',a.ipfs_bin,'--cloudflared',a.cloudflared,'--car',a.ipfs_car,'--state',a.ipfs_state],'ipfs.log')
             broker_peer=discover_transport(a.broker,lambda:stopping)
-            start([a.relay,a.relay_key,a.broker.rstrip('/')+'/sandbox/p2p',broker_peer],'relay.log')
+            relay_command=[a.relay]
+            if a.relay_port!=4019:relay_command+=['-port',str(a.relay_port)]
+            start(relay_command+[a.relay_key,a.broker.rstrip('/')+'/sandbox/p2p',broker_peer],'relay.log')
             relay=ready(a.state/'relay.log',r'relay_peer=(12D3KooW\S+)',30)
             if relay!=expected_peer:raise ValueError('relay key does not match the measured compose')
-            start([a.cloudflared,'tunnel','--no-autoupdate','--url','http://127.0.0.1:4019'],'tunnel.log')
+            start([a.cloudflared,'tunnel','--no-autoupdate','--url',f'http://127.0.0.1:{a.relay_port}'],'tunnel.log')
             host=ready(a.state/'tunnel.log',r'https://([a-z0-9-]+\.trycloudflare\.com)',90)
             ready(a.state/'tunnel.log',r'(Registered tunnel connection)',90)
             tunnel_address=public_ready(host)
             broker_host=urlsplit(a.broker).hostname;broker_address=resolve(broker_host)
-            start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port','18484','--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
+            start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port',str(proxy_port),'--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
             hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3600)
             (a.state/'locator.json').write_text(json.dumps(hint,indent=2))
             published=True;republish(publish,hint,False);last_http=time.monotonic()
             last_chain_attempt=0;published_entries=[]
             if stopping:return
         publisher=Publisher(a.publisher_key,a.publisher_address,a.broker,a.pool_version,a.operator)
-        pools=Generations(a.state,a.broker,publisher,start,expected_peer,a.restart_timeout)
+        pools=Generations(a.state,a.broker,publisher,start,expected_peer,a.restart_timeout,a.max_slots,a.coexist_pool)
         pools.current=pools.launch(initial,a.state/'guests' if handoff else None)
         if handoff:
             deadline=time.monotonic()+30
