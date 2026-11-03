@@ -249,7 +249,7 @@ def main():
     for path in (a.relay,a.relay_key,a.cloudflared,a.publisher_key):
         if not path.is_file():raise FileNotFoundError(path)
     while not a.adopt_launcher:
-        try:preflight(a.state,[],coexist_pools=a.coexist_pool);break
+        try:preflight(a.state,[],coexist_pools=a.coexist_pool+[a.state.parent]);break  # a killed predecessor's guests drain on their own
         except MacOccupied:print('waiting for the active Mac lane',flush=True);time.sleep(10)
     transport_record=a.state.parent/'transports.json'
     if not a.adopt_launcher:
