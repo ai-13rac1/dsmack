@@ -7,13 +7,15 @@ measures the gateway, worker and model files. The browser checks the registry
 entry against that environment and displays the selected policy in guest
 verification details.
 
-Model traffic in the Pi page is encrypted directly to NEAR. For `baseline-pg2`,
-the page also sends the first prompt before inference, and the complete assistant
+The Pi page uses NEAR TEE by default or a browser-selected model provider.
+For `baseline-pg2`, the page also sends the first prompt before inference, and the complete assistant
 response on each tool call, through the authenticated Noise MCP session. The
 guest gateway owns an offline CPU classifier; MCP invokes its loopback endpoint.
 Repository import tool arguments are scanned before pre-flight. A pre-flight
 denial applies to the next model tool call; each subsequent call checks the
-complete response again. The denied call returns `isError: true` with
+complete response again. These MCP checks run independently of the model provider
+and also run when model requests go directly from the browser on a user key.
+The denied call returns `isError: true` with
 `PG2_PROMPT_ATTACK` and the job continues. Missing response context returns
 `MONITOR_CONTEXT_REQUIRED`. Classifier failures propagate as errors. No monitor
 decisions enter gateway audit events or host/broker receipts. The worker denies
