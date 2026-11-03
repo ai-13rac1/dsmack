@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write, install or uninstall a launchd user agent for a Mac pool command."""
+"""Supervise a Mac pool with launchd and reload its guest generation."""
 import argparse
 import json
 import os
@@ -12,7 +12,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('write', 'install', 'uninstall', 'run'))
+    parser.add_argument('action', choices=('write', 'install', 'uninstall', 'run', 'reload'))
     parser.add_argument('--label', default='org.dsmack.pool.staging')
     parser.add_argument('--root', type=Path, required=True, help='dedicated pool generations and launchd logs')
     parser.add_argument('--command', type=Path, required=True, help='Mac-local JSON argv, without --state or adoption')
@@ -27,11 +27,16 @@ def main():
         parser.error('command must be a JSON argv array')
     if any(arg.split('=', 1)[0] in ('--state', '--adopt-launcher') for arg in command):
         parser.error('service owns fresh state directories; remove --state and --adopt-launcher')
+    domain = 'gui/'+str(os.getuid())
+    if args.action == 'reload':
+        subprocess.run(['launchctl', 'kill', 'SIGHUP', domain+'/'+label], check=True)
+        return
     if args.action == 'run':
         state = root / ('pool-'+str(time.time_ns()))
+        if not any(arg.split('=', 1)[0] == '--restart-config' for arg in command):
+            command += ['--restart-config', str(root/'restart.json')]
         os.execv(command[0], command + ['--state', str(state)])
     plist = Path.home()/'Library/LaunchAgents'/(label+'.plist')
-    domain = 'gui/'+str(os.getuid())
     if args.action == 'uninstall':
         subprocess.run(['launchctl', 'bootout', domain+'/'+label], check=True)
         plist.unlink()

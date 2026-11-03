@@ -38,7 +38,10 @@ class ConfigTests(unittest.TestCase):
             docker_compose_file=json.dumps(dict(services=dict(node=node))))))
         operator = root/'operator.json'
         operator.write_text(json.dumps(dict(max_guests=4, guest=dict(mem_mib=4096, vcpus=1), reserve=dict(mem_gb=16, cores=4))))
-        config = dict(runner=str(runner), workload=str(workload), operator=str(operator), pool_version='next',
+        source = root/'new-source'
+        (source/'applications/compute-node').mkdir(parents=True)
+        (source/'applications/compute-node/pool.py').write_text('# staged pool\n')
+        config = dict(source=str(source), runner=str(runner), workload=str(workload), operator=str(operator), pool_version='next',
                       workload_sha256=pool.sha(workload/'workload.img'), manifest_sha256=pool.sha(workload/'compose-manifest.json'))
         path = root/'restart.json'; path.write_text(json.dumps(config))
         return runner, workload, path
@@ -49,6 +52,7 @@ class ConfigTests(unittest.TestCase):
             runner, workload, path = self.release(root)
             config = pool_restart.replacement(path, 'relay')
             self.assertEqual(config['drain'], 480)
+            self.assertEqual(config['source'], root/'new-source')
             (workload/'workload.img').write_bytes(b'incomplete transfer')
             with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
                 pool_restart.replacement(path, 'relay')
@@ -66,7 +70,7 @@ class ConfigTests(unittest.TestCase):
             start = Mock()
             manager = pool_restart.Generations(Path(tmp), 'broker', Mock(), start, 'relay',
                                                max_slots=1, coexist_pools=[Path('/production')])
-            config = dict(runner='/runner', workload='/workload', operator='/operator',
+            config = dict(source=Path('/source'), runner='/runner', workload='/workload', operator='/operator',
                           seconds=3600, drain=480, replace=1830)
             manager.launch(config)
             command = start.call_args.args[0]
@@ -145,12 +149,58 @@ class HandoverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); start=Mock()
             manager=pool_restart.Generations(root, 'broker', Mock(), start, 'relay')
-            config=dict(runner=root/'runner', workload=root/'workload', operator=root/'operator.json',
+            config=dict(source=root/'source', runner=root/'runner', workload=root/'workload', operator=root/'operator.json',
                         seconds=840, drain=270, replace=450)
             manager.launch(config)
             command=start.call_args.args[0]
             self.assertEqual(command[command.index('--drain-seconds')+1], '270')
             self.assertEqual(command[command.index('--pool-root')+1], root)
+
+    def test_source_upgrade_keeps_ready_slots_through_boot_and_old_retirement(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(pool_restart, 'hardware', return_value=dict(mem_bytes=64<<30, cores=14)):
+            root = Path(tmp)
+            _, _, restart = ConfigTests().release(root)
+            publisher = Mock(account=SimpleNamespace(address='publisher'))
+            publisher.tick.return_value = dict(event='heartbeat_posted', updated_at=100)
+            start = Mock(return_value=Mock(poll=Mock(return_value=None)))
+            manager = pool_restart.Generations(root, 'broker', publisher, start, 'relay')
+            old_state = root/'old'; old_state.mkdir()
+            def write_slots(state, ready):
+                (state/'directory.json').write_text(json.dumps(dict(config=dict(max_guests=4),
+                    hardware={}, classes=['class'], errors=[], slots=[dict(slot_id=i,
+                    state='ready' if i < ready else 'launching', relay_peer=state.name+str(i)) for i in range(4)])))
+            write_slots(old_state, 4)
+            old = dict(state=old_state, process=Mock(poll=Mock(return_value=None)))
+            manager.current = old; manager.pools = [old]
+            manager.restart(restart)
+            new = manager.candidate
+            self.assertEqual(start.call_args.args[0][1], root/'new-source/applications/compute-node/pool.py')
+            counts = []
+            def tick():
+                snapshot = manager.tick()
+                counts.append(sum(s['state'] == 'ready' for s in snapshot['slots']))
+                self.assertGreater(counts[-1], 0)
+            # There is no candidate directory during startup; old slots stay advertised.
+            tick()
+            write_slots(new['state'], 0)
+            tick(); old['process'].send_signal.assert_not_called()
+            live = dict(admit_until=pool.time.time()+300, kind='compute',
+                relay_peer=new['state'].name+'0', manifest_sha256=new['config']['measurement'],
+                os_image_hash=new['config']['image'], attestation=dict(status='verified'))
+            network = dict(macs=[dict(publisher='publisher', online=True, ready=5, last_heartbeat=100)])
+            manager.read = Mock(side_effect=lambda path: [live] if path == '/nodes' else network)
+            write_slots(new['state'], 1)
+            tick()
+            old['process'].send_signal.assert_called_once_with(signal.SIGTERM)
+            self.assertEqual(publisher.version, 'next')
+            self.assertIs(manager.current, new)
+            # Even if all old guests expire now, the new generation supplies capacity.
+            old['process'].poll.return_value = 0
+            for ready in range(1, 5):
+                write_slots(new['state'], ready)
+                tick()
+            self.assertEqual(counts, [4, 4, 5, 1, 2, 3, 4])
+            new['process'].send_signal.assert_not_called()
 
 
 if __name__ == '__main__':

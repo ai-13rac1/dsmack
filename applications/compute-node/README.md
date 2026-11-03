@@ -171,10 +171,13 @@ python3 applications/compute-node/pool-service.py uninstall \
 
 The agent restarts an exited launcher after launchd's 60-second throttle. Logs
 are in the service root. Uninstall allows the launcher to drain its owned guests.
+The service supplies `--restart-config SERVICE_ROOT/restart.json` by default;
+an explicit `--restart-config` in the command JSON selects another path.
 
 Restart the pool with `SIGHUP` to the launcher. It validates the replacement's
 files, measured base and template hashes and expected workload/compose hashes,
-then starts a new pool behind the existing relay and proxy. One boot lock
+then starts `applications/compute-node/pool.py` from the replacement's `source`
+checkout behind the existing relay and proxy. One boot lock
 serializes guest identity assignment across generations. A single combined fleet
 heartbeat and discovery directory retain the old guests throughout overlap.
 After a new ready guest has a live verified broker registration and the combined
@@ -183,14 +186,18 @@ pool stops rotating and retains its guests through their measured admission and
 `--drain-seconds` windows. A rejected config, failed boot or readiness timeout
 keeps the serving pool rotating; the timeout drains only the candidate.
 
-Use absolute paths in `restart.json`. Generate it from a completed, immutable
-staged release (the hashes are launch expectations, checked before starting):
+To upgrade a launchd pool without a gap in ready slots, set `SERVICE_ROOT` to
+its `--root` and `NEW_SOURCE` to the new checkout's absolute path. Set
+`NEW_RUNNER`, `NEW_WORKLOAD`, `OPERATOR` and `SOURCE_COMMIT` to the staged
+release. Keep the service checkout and running generations' checkouts available.
+Generate the replacement config atomically at the service's restart path:
 
 ```sh
-VENV/bin/python - "$NEW_RUNNER" "$NEW_WORKLOAD" "$OPERATOR" "$SOURCE_COMMIT" <<'PY' > "$STATE/restart.json.tmp"
+RESTART_CONFIG="$SERVICE_ROOT/restart.json"
+VENV/bin/python - "$NEW_SOURCE" "$NEW_RUNNER" "$NEW_WORKLOAD" "$OPERATOR" "$SOURCE_COMMIT" <<'PY' > "$RESTART_CONFIG.tmp"
 import hashlib, json, sys
 from pathlib import Path
-runner, workload, operator, version = sys.argv[1:]
+source, runner, workload, operator, version = sys.argv[1:]
 def sha(path):
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -198,13 +205,25 @@ def sha(path):
             digest.update(block)
     return digest.hexdigest()
 w = Path(workload)
-print(json.dumps(dict(runner=runner, workload=workload, operator=operator,
+print(json.dumps(dict(source=source, runner=runner, workload=workload, operator=operator,
     pool_version=version, workload_sha256=sha(w/'workload.img'),
     manifest_sha256=sha(w/'compose-manifest.json'))))
 PY
-mv "$STATE/restart.json.tmp" "$STATE/restart.json"
-kill -HUP "$(cat "$STATE/launcher.pid")"
+mv "$RESTART_CONFIG.tmp" "$RESTART_CONFIG"
+VENV/bin/python applications/compute-node/pool-service.py reload \
+  --label org.dsmack.pool.staging --root "$SERVICE_ROOT" \
+  --command /absolute/staging/pool-command.json
 ```
+
+`reload` sends SIGHUP to the launchd job's existing launcher. The old generation
+keeps rotating until a new guest is ready and visible at the broker, then drains
+while the new generation fills its remaining slots. The combined heartbeat's
+`version` switches to `SOURCE_COMMIT` when the new generation takes over.
+Update the command JSON's checkout, runner, workload, operator and pool-version
+arguments to the same release for subsequent launchd starts.
+
+For a manually started launcher, write the same config at its `--restart-config`
+path and run `kill -HUP "$(cat "$STATE/launcher.pid")"`.
 
 The replacement must use the existing relay peer, broker and tunnel index;
 changes to those shared transports require a separate transport deployment.
@@ -220,8 +239,9 @@ attestation records, and transfers those drivers and transport groups to the new
 controller. It kills only the frozen controllers after the new pool acknowledges
 ownership. If any old guest is still booting, the command refuses and resumes the
 old controllers; retry after that guest attests. After the new launcher writes
-`launcher.pid`, create `restart.json` and send HUP as above. No guest, native
-runner, relay or workload rebuild is needed for this Python-only upgrade.
+`launcher.pid`, create `restart.json` at its `--restart-config` path and send HUP.
+No guest, native runner, relay or workload rebuild is needed for this Python-only
+upgrade.
 
 With shell variables set to the existing installation, the first handoff command
 is (run from the updated checkout):
