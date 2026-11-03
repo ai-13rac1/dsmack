@@ -974,8 +974,9 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
           }
           if (!["GUEST_BUSY", "NODE_NOT_LIVE"].includes(e.code)) {
             const path = chainDirectory ? `${brokerFailure} Directory: chain.` : "Directory: broker.";
-            throw new Error(`${path} The broker could not reserve the discovered guest` +
-              (e.status ? ` (HTTP ${e.status}).` : `: ${e.message}`));
+            if (e.code === "SESSION_ACTIVE")
+              throw new Error("Another of your chats still holds a guest. End its session there, or wait: it is released when that chat ends or its guest stops (at most an hour). " + e.message);
+            throw new Error(`${path} The broker could not reserve the discovered guest (${e.code || "HTTP " + e.status}): ${e.message}`);
           }
           exclude.add(peer);
           mark("grant:unavailable", { peer, error: e.code });

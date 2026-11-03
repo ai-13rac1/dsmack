@@ -28,6 +28,11 @@ export class AgentSessions {
       (s.receiptSeen || (s.setupUntil ?? s.grant.expires_at) > this.b.now());
   }
   /** @param {any} node @param {{publisher: string, slot_id: number} | undefined} placement */
+  serving(s) {
+    // A session on a guest that is no longer live cannot serve, so it does not hold the wallet's slot.
+    // It still reserves its Mac slot (see available): the old VM may run until its hour ends.
+    return this.active(s) && this.b.live().some(n => n.kind === "compute" && n.relay_peer === s.grant.relay_peer);
+  }
   available(node, placement = undefined) {
     return !node.telemetry?.busy && !Object.values(this.b.payments?.state.agentSessions ?? {})
       .some(s => this.active(s) &&
@@ -72,7 +77,7 @@ export class AgentSessions {
         s.receiptSeen && !s.final && s.grant.expires_at <= b.now())) {
         throw new InferenceError("SESSION_SAVING", "workspace is still being saved; retry in 5 seconds", 409, 5);
       }
-      const held = existing.filter(s => s.wallet === wallet && this.active(s));
+      const held = existing.filter(s => s.wallet === wallet && this.serving(s));
       need(held.length < this.maxActiveSessionsPerWallet, "SESSION_ACTIVE",
         `wallet active guest limit (${this.maxActiveSessionsPerWallet}) reached; end an existing session: ${held.map(s => s.grant.grant_id).join(", ")}`, 409);
       const node = b.live().find((n) => n.kind === "compute" && n.relay_peer === r.node_peer);

@@ -85,6 +85,17 @@ test("concurrent claims hold one guest and expired unused grants release without
  assert.equal(status.credit.spentNanoUsd,"0");
 });
 
+test("a session on a guest that is no longer live does not hold the wallet slot",async()=>{
+ const f=await fixture();
+ const gone={...f.node,relay_peer:peer+"-gone"};
+ f.broker.live=()=>[gone,f.node];
+ f.setSlots([{slot_id:1,state:"ready",relay_peer:gone.relay_peer},{slot_id:0,state:"ready",relay_peer:f.node.relay_peer}]);
+ await f.sessions.open(await f.signed("agent-open",{conversationId:"old",client_peer:peer,node_peer:gone.relay_peer}));
+ f.broker.live=()=>[f.node];
+ const next=await f.sessions.open(await f.signed("agent-open",{conversationId:"new",client_peer:peer,node_peer:f.node.relay_peer}));
+ assert(next.sessionId);
+});
+
 test("configured wallet slot limit persists across session handlers and ending a stay frees one slot",async()=>{
  const f=await fixture({agentCfg:{maxActiveSessionsPerWallet:2}});
  const nodes=Array.from({length:3},(_,i)=>({...f.node,relay_peer:peer+"-slot-"+i}));
