@@ -11,7 +11,9 @@ import { ArtifactState } from "./artifact-state.mjs";
 import { ArtifactModels } from "./artifact-models.mjs";
 import { createSessionPersistence } from "./artifact-persistence.mjs";
 import { sealArtifact, openArtifact, artifactLink, parseArtifactLink, sharedScope, viewerSessionId } from "./artifact-share.mjs";
-import { createChatStorage, saveChat } from "./chat-storage.mjs";
+import { html } from "lit";
+import { installMessageFeedback } from "./chat-feedback.mjs";
+import { createChatStorage, saveChat, exportChats } from "./chat-storage.mjs";
 import { DeviceKeys } from "./keys.mjs";
 import { ChatSync } from "./chat-sync.mjs";
 import { SavedWorkspace } from "./workspaces.mjs";
@@ -658,7 +660,18 @@ async function initChat() {
   storage = createChatStorage();
   persistSession = createSessionPersistence({ storage, save: saveChat });
   if (keys.bundle && cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
+  installMessageFeedback(() => ({ session: currentSession, messages: agent.state.messages }));
   chat = new AgentInterface();
+  chat.addEventListener("message-feedback", event => {
+    const record = {
+      id: crypto.randomUUID(), ...event.detail, createdAt: new Date().toISOString(),
+      pageVersion: document.querySelector('meta[name="page-bundle-cid"]').content,
+      ...(guest?.lease ? { guestId: guest.lease.sessionId } : {}),
+    };
+    currentSession.feedback = [...(currentSession.feedback || []), record];
+    for (const control of chat.querySelectorAll("message-feedback")) control.records = currentSession.feedback;
+    saveCurrentChat(true).catch(error);
+  });
   chat.id = "chat";
   // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
   chat.updated = () => {
@@ -724,14 +737,32 @@ async function initChat() {
   if (!await loadSharedViewer()) await useSession(sameWallet ? saved : null);
   await renderPersistence();
   action("new-chat", () => useSession());
-  action("sessions", () => SessionListDialog.open(
-    (id) => (async () => {
+  action("sessions", async () => {
+    const dialog = new SessionListDialog();
+    dialog.onSelectCallback = id => (async () => {
       const data = await storage.sessions.get(id);
       require(data, "This saved chat has been deleted.");
       await useSession(data);
-    })().catch(error),
-    (id) => { if (id === currentSession.id) useSession().catch(error); },
-  ));
+    })().catch(error);
+    dialog.onDeleteCallback = id => { if (id === currentSession.id) useSession().catch(error); };
+    const content = dialog.renderContent.bind(dialog);
+    const download = async sessionId => {
+      await saveCurrentChat();
+      const jsonl = await exportChats(storage, sessionId);
+      const url = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = sessionId ? `chat-${sessionId}.jsonl` : "chats.jsonl";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    dialog.renderContent = () => html`<div class="chat-exports"><span>Export chats</span>
+      <button class="secondary" @click=${() => download(currentSession.id).catch(error)}>Current chat</button>
+      <button class="secondary" @click=${() => download().catch(error)}>All chats</button>
+    </div>${content()}`;
+    dialog.open();
+    await dialog.loadSessions();
+  });
   action("save-storage", async () => {
     await PersistentStorageDialog.request();
     await renderPersistence();
@@ -1052,7 +1083,7 @@ async function checkSync() {
       const latest = all.filter(m => remoteIds.has(m.id)).sort((a, b) => b.lastModified.localeCompare(a.lastModified))[0];
       const id = (imported || !agent.state.messages.some(m => m.role === "user")) && latest ? latest.id : currentSession.id;
       const data = await storage.sessions.get(id);
-      if (data && (id !== currentSession.id || JSON.stringify(data.messages) !== JSON.stringify(agent.state.messages))) await useSession(data);
+      if (data && (id !== currentSession.id || JSON.stringify(data.messages) !== JSON.stringify(agent.state.messages) || JSON.stringify(data.feedback) !== JSON.stringify(currentSession.feedback))) await useSession(data);
       if (imported && latest) await store("continuity.imported", false);
     }
     await startupStep("sync-flush", () => checking.flush());
