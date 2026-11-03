@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Interface, keccak256, Wallet } from "npm:ethers@6.17.0";
-import { discoverChainNodes, signedTunnelNodes } from "./chain-directory.mjs";
+import { discoverChainNodes, signedTunnelNodes, chainDirectoryCache } from "./chain-directory.mjs";
 
 const publisher = Wallet.createRandom(), now = 1793390000;
 const peer = "12D3KooWPXeq29kZzJxDgCA92X16PSiM5Bv1XxAshJ8wJzYv9k6x";
@@ -98,4 +98,53 @@ test("a stalled third provider does not delay matching head, block or state read
 test("a valid direct attestation cannot replace the registered compose measurements", async () => {
   const f = await fixture({ composeHash: word(5) }), directory = await discoverChainNodes({ ...f, now });
   await assert.rejects(directory.verifyRegistration(f.registration), /differs from its registered UsageEscrow class/);
+});
+
+
+test("chain RPC reads recover once from a phone network failure", async () => {
+  const f = await fixture(), base = f.fetcher, seen = new Set();
+  f.fetcher = (url, options) => {
+    const key = url + options.body;
+    if (!seen.has(key)) { seen.add(key); throw new TypeError("Failed to fetch"); }
+    return base(url, options);
+  };
+  const directory = await discoverChainNodes({ ...f, now });
+  assert.equal(directory.nodes[0].relay_peer, peer);
+  assert.equal(directory.expiresAt, now + 600);
+});
+
+test("a verified directory is reused until expiry or a failed guest connection invalidates it", async () => {
+  let time = now, reads = 0;
+  const cache = chainDirectoryCache({ now: () => time, lookup: async () => ({ expiresAt: time + 600, read: ++reads }) });
+  const first = await cache.read();
+  assert.equal(await cache.read(), first);
+  time += 599;
+  assert.equal(await cache.read(), first);
+  time++;
+  assert.equal((await cache.read()).read, 2);
+  cache.invalidate();
+  assert.equal((await cache.read()).read, 3);
+});
+
+test("an expired publication waits briefly only for a live publisher and preserves the final error", async () => {
+  const expired = Object.assign(Error("signed publication expired"), { code: "PUBLICATION_EXPIRED" });
+  let reads = 0, sleeps = [];
+  const options = { publisherOnline: async () => true, sleep: async ms => sleeps.push(ms),
+    lookup: async () => { if (++reads < 3) throw expired; return { expiresAt: now + 600 }; } };
+  assert.equal((await chainDirectoryCache(options).read()).expiresAt, now + 600);
+  assert.equal(reads, 3); assert.deepEqual(sleeps, [2000, 2000]);
+  reads = 0; sleeps = [];
+  await assert.rejects(chainDirectoryCache({ ...options, publisherOnline: async () => false }).read(), error => error === expired);
+  assert.equal(reads, 1); assert.deepEqual(sleeps, []);
+  reads = 0;
+  await assert.rejects(chainDirectoryCache({ ...options, lookup: async () => { reads++; throw expired; } }).read(), error => error === expired);
+  assert.equal(reads, 4); assert.deepEqual(sleeps, [2000, 2000, 2000]);
+});
+
+test("invalid publication signatures fail without waiting for a publisher", async () => {
+  let checks = 0;
+  const cache = chainDirectoryCache({ lookup: async () => signedTunnelNodes({ ...await envelope(), signature: 'bad' }, publisher.address, now),
+    publisherOnline: async () => { checks++; return true; } });
+  await assert.rejects(cache.read(), /signature is invalid/);
+  assert.equal(checks, 0);
 });

@@ -316,3 +316,23 @@ test("less than the minimum cannot start and pending inference credit stays rese
  assert.equal(f.inference.summary(wallet).spentNanoUsd,"900000");
  assert.equal(f.inference.summary(wallet).reservedNanoUsd,"600000");
 });
+
+
+test("directory distinguishes all slots busy from no online Macs, even without live guest registrations", async () => {
+ const {handleRequest}=await import("./server.ts");
+ const f=await fixture(),dir=await Deno.makeTempDir();
+ const get=()=>handleRequest(new Request("https://broker.example/nodes"),f.broker,{dataDir:dir,env:{}});
+ try {
+  f.broker.live=()=>[];
+  const empty=await get();
+  assert.equal(empty.status,503); assert.equal((await empty.json()).error.code,"FLEET_EMPTY");
+  const mac={publisher:"mac-one",received_at:f.broker.now(),updated_at:f.broker.now(),slots:[{slot_id:0,state:"busy"}]};
+  await Deno.writeTextFile(dir+"/fleet.json",JSON.stringify({heartbeats:{[mac.publisher]:mac},
+   links:{[mac.publisher]:{link:{operator:f.wallet.address,kid:"fixture"}}}}));
+  const busy=await get(),error=(await busy.json()).error;
+  assert.equal(busy.status,503); assert.equal(error.code,"FLEET_BUSY");
+  assert.equal(error.retryAfterSeconds,15); assert.equal(busy.headers.get("retry-after"),"15");
+  f.advance(60);
+  assert.equal((await (await get()).json()).error.code,"FLEET_EMPTY");
+ } finally { await Deno.remove(dir,{recursive:true}); }
+});

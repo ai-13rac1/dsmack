@@ -22,7 +22,7 @@ export function recoveryMessage(e) {
   return "Recovery couldn’t finish. Try again, or link from your original device with a QR code.";
 }
 
-export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
+export function continuityUI({ keys, credit, cfg, api, error, beforeExport, beforeSwitch }) {
   const $ = (id) => document.getElementById(id);
   let hasValue = false;
   let receiver, dkimPoll;
@@ -32,7 +32,7 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
   const update = async (state = {}) => {
     if (state.hasValue !== undefined) hasValue = state.hasValue;
     $("welcome").hidden = !!keys.bundle;
-    for (const id of ["add-passkey", "enroll-email", "send-device"]) $(id).disabled = !keys.bundle;
+    for (const id of ["add-passkey", "enroll-email", "send-device", "switch-wallet"]) $(id).disabled = !keys.bundle;
     const enrolled = await store("continuity.passkey") || await store("continuity.email");
     $("recovery-nudge").hidden = !keys.bundle || !hasValue || !!enrolled;
   };
@@ -54,6 +54,11 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
     });
   };
   const imported = async (bundle) => {
+    if (keys.bundle && keys.bundle.walletKey !== bundle.walletKey) {
+      if (!window.confirm("This will replace the wallet loaded on this device with the linked wallet and its chats. Continue?"))
+        throw Error("Wallet replacement cancelled.");
+      await beforeSwitch();
+    }
     await keys.import(bundle);
     await store("continuity.imported", true);
     status("Device linked. Loading your chats…");
@@ -65,6 +70,18 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport }) {
   }; };
   bind("use-another-device", async () => {
     $("continuity-panel").hidden = !$("continuity-panel").hidden;
+  });
+  bind("switch-wallet", async () => {
+    requireWallet();
+    if (!await store("continuity.passkey") && !await store("continuity.email")) {
+      status("Save a passkey or add a recovery email in this panel before switching wallets, so you can return to this wallet.");
+      $("add-passkey").focus();
+      return;
+    }
+    if (!window.confirm("Switch wallets on this device? Use your saved passkey or email to return to this wallet.")) return;
+    await beforeSwitch();
+    await keys.disconnect();
+    location.reload();
   });
   bind("add-passkey", async () => {
     requireWallet();

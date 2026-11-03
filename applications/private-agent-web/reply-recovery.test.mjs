@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from './reply-recovery.mjs';
 
-test('offline, broker restart, provider and credit failures identify an action', () => {
+test('offline, browser, broker, provider and credit failures identify an action', () => {
   const offline = replyFailure(Error('network error'), { partial: true, online: false });
   assert.equal(offline.category, 'offline');assert.match(offline.message, /Reconnect.*Retry/);
   const broken = replyFailure(Error('network error'), { partial: true, online: true });
-  assert.equal(broken.category, 'broker');assert.equal(broken.interrupted, true);
-  assert.equal(broken.message, 'Connection lost mid-reply — the server may have restarted. Retry');
+  assert.equal(broken.category, 'browser');assert.equal(broken.interrupted, true);
+  assert.match(broken.message, /browser lost its connection.*background.*Retry/);
   const unavailable = replyFailure(Object.assign(Error('Service unavailable'), {status:503}));
-  assert.equal(unavailable.category, 'broker');assert.match(unavailable.message, /restarting.*Retry.*503/);
+  assert.equal(unavailable.category, 'broker');assert.match(unavailable.message, /Broker returned HTTP 503.*Retry/);
   const provider = replyFailure(Object.assign(Error('failed'), {code:'PROVIDER_UNAVAILABLE',status:502}));
   assert.equal(provider.category, 'provider');assert.match(provider.message, /NEAR AI.*Retry/);
   const credit = replyFailure(Error('CREDIT_EXHAUSTED: insufficient'));
@@ -97,4 +97,22 @@ test('attaching an API ref preserves an abort with a read-only DOMException mess
   assert.match(linked.message,/ref 1234abcd/);
   assert.equal(aborted.message,'The operation was aborted.');
   assert.equal(referenceError(aborted,undefined),aborted);
+});
+
+
+test('guest closure and busy capacity cannot be confused with a broker restart or an empty fleet', () => {
+  const guest = replyFailure(Error('Guest stream closed before a result was received.'));
+  assert.equal(guest.category, 'guest');
+  assert.match(guest.message, /Mac guest disconnected.*may have run/);
+  const busy = replyFailure(Object.assign(Error('busy'), { code: 'FLEET_BUSY', status: 503, retryAfterSeconds: 7 }));
+  assert.equal(busy.message, 'All Macs are busy, retry in 7 seconds.');
+  assert.match(replyFailure(Object.assign(Error('empty'), { code: 'FLEET_EMPTY', status: 503 })).message, /No Macs are connected/);
+  const http = replyFailure(Object.assign(Error('refused'), { status: 409, code: 'BAD_REQUEST', ref: '1234abcd' }));
+  assert.match(http.message, /Broker returned HTTP 409.*BAD_REQUEST.*ref 1234abcd/);
+  const usage = replyFailure(Object.assign(Error('This usage check was already sent. Retry with a new signed request.'), { status: 409, code: 'REQUEST_ALREADY_SENT' }));
+  assert.match(usage.message, /HTTP 409.*REQUEST_ALREADY_SENT.*already sent/);
+  assert.doesNotMatch(usage.message, /waiting for|Reconcile provider/);
+  const browser = replyFailure(referenceError(new TypeError('Failed to fetch'), 'a21a5fd5'));
+  assert.equal(browser.category, 'browser');
+  assert.doesNotMatch(browser.message, /broker.*restarting/i);
 });

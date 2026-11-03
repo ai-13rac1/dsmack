@@ -30,7 +30,8 @@ import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
 import { monitorLabel } from "../egress-policy/monitor/registry.mjs";
 import { GuestSession, createGuestPeer } from "./agent-tools.mjs";
-import { discoverChainNodes } from "./chain-directory.mjs";
+import { chainDirectoryCache } from "./chain-directory.mjs";
+import { readWithRetry, pause as waitForRead } from "./network-read.mjs";
 import { fetchDirectAttestation } from "./direct-attestation.mjs";
 import { piToolCatalog, defaultAgentEnvironment, buildAgentPrompt } from "./pi-prompt.mjs";
 const $ = (id) => document.getElementById(id),
@@ -100,36 +101,41 @@ function details(parent, title, value) {
 async function api(path, body, opts = {}) {
   const ref = typeof body?.nonce === "string" && /^[0-9a-f]{32}$/.test(body.nonce) ? body.nonce.slice(0, 8) : undefined;
   try {
-    const response = await fetch(cfg.broker + path, {
-      method: body === undefined ? "GET" : "POST",
-      headers: body === undefined ? {} : { "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: "error",
-      cache: "no-store",
-      signal: opts.signal,
-    });
-    if (!response.ok) {
-      const raw = await response.text();
-      let e;
-      try {
-        e = JSON.parse(raw).error;
-      } catch {}
-      const code = typeof e === "object" ? e?.code : e;
-      const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
-        ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
-        : code === "starter_sandbox_used"
-        ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
-        : code === "diagnostic_node_not_live"
-        ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
-        : undefined;
-      const message = friendly || (typeof e === "object"
-        ? [e?.code, e?.message].filter(Boolean).join(": ")
-        : e) ||
-        `Broker ${path}: HTTP ${response.status}`;
-      throw Object.assign(new Error(message), { code, status: response.status,
-        retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
-    }
-    return opts.stream ? response : await response.json();
+    const read = async () => {
+      const response = await fetch(cfg.broker + path, {
+        method: body === undefined ? "GET" : "POST",
+        headers: body === undefined ? {} : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "error",
+        cache: "no-store",
+        signal: opts.signal,
+      });
+      if (!response.ok) {
+        const raw = await response.text();
+        let e;
+        try {
+          e = JSON.parse(raw).error;
+        } catch {}
+        const code = typeof e === "object" ? e?.code : e;
+        const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
+          ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
+          : code === "starter_sandbox_used"
+          ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
+          : code === "diagnostic_node_not_live"
+          ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
+          : undefined;
+        const message = friendly || (typeof e === "object"
+          ? [e?.code, e?.message].filter(Boolean).join(": ")
+          : e) ||
+          `Broker ${path}: HTTP ${response.status}`;
+        throw Object.assign(new Error(message), { code, status: response.status,
+          retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
+      }
+      return opts.stream ? response : await response.json();
+    };
+    // Attestation asks the guest to sign a fresh challenge; never resend it.
+    return body === undefined && !path.startsWith("/sandbox/nodes/")
+      ? await readWithRetry(read, opts.signal) : await read();
   } catch (error) {
     throw referenceError(error, ref);
   }
@@ -775,20 +781,42 @@ function directoryFailure(e) {
   return "Broker guest directory unavailable" + (e.status ? ` (HTTP ${e.status})` : "") +
     (e.message && !e.message.startsWith("Broker /nodes") ? `: ${e.message}` : ".");
 }
-async function reverify({ registration: prior, signal }) {
+let chainLookup;
+function directoryLookup() {
+  return chainLookup ||= chainDirectoryCache({ config: cfg, publisherOnline: async signal => {
+    const network = await api("/network", undefined, { signal });
+    return network.macs.some(mac => mac.online && mac.publisher.toLowerCase() === cfg.chainDirectory.publisher.toLowerCase());
+  } });
+}
+async function reverify({ registration: prior, signal, directory, browserPeer }) {
   const peer = prior.relay_peer;
   const challenge = sandbox.hex(crypto.getRandomValues(new Uint8Array(32)));
   performance.mark("dsmack:attestation:start", { detail: { peer } });
-  const registration = await api("/sandbox/nodes/" + encodeURIComponent(peer) + "/attestation?challenge=" + challenge, undefined, { signal });
-  performance.mark("dsmack:attestation:response", { detail: { peer } });
-  require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
-  const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
-  require(registration.payments?.challenge === challenge, "Node challenge mismatch. Stale attestation refused.");
-  require(Number(registration.admit_until) * 1000 >= Date.now() + 30000 &&
-    registration.payments.runExpires * 1000 >= Date.now() + 30000,
-    "Guest is too close to drain to reconnect.");
-  performance.mark("dsmack:attestation:verified", { detail: { peer } });
-  return checked;
+  let chain, direct;
+  if (directory === "chain") {
+    chain = await directoryLookup().read({ signal });
+    const selected = chain.nodes.find(node => node.relay_peer === peer);
+    require(selected, "Chain directory no longer lists this guest.");
+    try { direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal }); }
+    catch (error) { directoryLookup().invalidate(); throw error; }
+  }
+  try {
+    const registration = direct?.registration || await api("/sandbox/nodes/" + encodeURIComponent(peer) + "/attestation?challenge=" + challenge, undefined, { signal });
+    performance.mark("dsmack:attestation:response", { detail: { peer } });
+    require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
+    if (chain) await chain.verifyRegistration(registration, signal);
+    const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
+    require(registration.payments?.challenge === challenge, "Node challenge mismatch. Stale attestation refused.");
+    require(Number(registration.admit_until) * 1000 >= Date.now() + 30000 &&
+      registration.payments.runExpires * 1000 >= Date.now() + 30000,
+      "Guest is too close to drain to reconnect.");
+    performance.mark("dsmack:attestation:verified", { detail: { peer } });
+    if (direct) Object.assign(checked, { chainTunnels: direct.entries, connection: direct.connection, directory: "chain", invalidateDirectory: () => directoryLookup().invalidate() });
+    return checked;
+  } catch (error) {
+    await direct?.connection.close().catch(() => {});
+    throw error;
+  }
 }
 async function discover({ peer: browserPeer, wait = false, deadline = Date.now() + (wait ? 90000 : 0), exclude = new Set(), signal, workspace, claim } = {}) {
   require(policy, "The bundled sandbox policy could not load. Refresh the page before sending a job.");
@@ -798,12 +826,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
   const setupSeconds = 30 + (workspace ? Math.ceil(workspace.size / (512 * 1024)) : 0);
   let lastRefusal, chainDirectory, brokerFailure;
   const mark = (stage, detail) => performance.mark("dsmack:" + stage, { detail });
-  const pause = milliseconds => new Promise((resolve, reject) => {
-    const aborted = () => { clearTimeout(timer); reject(signal.reason); };
-    const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
-    if (signal?.aborted) aborted();
-    else signal?.addEventListener("abort", aborted, { once: true });
-  });
+  const pause = milliseconds => waitForRead(milliseconds, signal);
   discovery: for (;;) {
     signal?.throwIfAborted();
     mark("discovery:start");
@@ -816,22 +839,20 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
       mark("discovery:end", { error: e.code || e.message });
       if (signal?.aborted) throw e;
       if (["FLEET_BUSY", "FLEET_EMPTY"].includes(e.code)) {
-        const retry = Math.max(1, Math.min(60, Number(e.retryAfterSeconds) || 15));
+        const retry = Number(e.retryAfterSeconds) || 15;
         showDirectory("broker");
-        // Older brokers use FLEET_BUSY even with zero live registrations.
-        const live = await api("/nodes?all=1", undefined, { signal });
-        const empty = !live.some(node => node.kind === "compute");
-        const message = empty ? `No Macs are connected right now; retrying in ${retry} s`
-          : `No Mac is free right now; retrying in ${retry} s`;
+        const message = e.code === "FLEET_EMPTY" ? `No Macs are connected right now; retry in ${retry} seconds`
+          : `All Macs are busy, retry in ${retry} seconds`;
         $("capacity-status").textContent = message;
-        if (!wait || Date.now() + retry * 1000 > deadline) throw new Error(empty ? "No Macs are connected right now. Try again shortly." : "No Mac is free right now. Try again shortly.");
+        if (!wait || Date.now() + retry * 1000 > deadline) throw Object.assign(new Error(message), {
+          code: e.code, status: e.status, ref: e.ref, retryAfterSeconds: e.retryAfterSeconds });
         await pause(retry * 1000);
         continue;
       }
       brokerFailure = directoryFailure(e);
       showDirectory("chain", brokerFailure);
       try {
-        chainDirectory = await discoverChainNodes({ config: cfg, signal });
+        chainDirectory = await directoryLookup().read({ signal });
         nodes = chainDirectory.nodes;
       } catch (chainError) {
         showDirectory("chain", brokerFailure, chainError.message);
@@ -877,13 +898,14 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
         if (chainDirectory) {
           require(browserPeer, "Direct guest attestation needs a browser peer connection.");
           mark("attestation:direct", { peer, challenge });
-          direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal });
+          try { direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal }); }
+          catch (error) { directoryLookup().invalidate(); throw error; }
         }
         const registration = direct ? direct.registration : await api("/sandbox/nodes/" + encodeURIComponent(peer) +
           "/attestation?challenge=" + challenge, undefined, { signal });
         mark("attestation:response", { peer });
         require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
-        if (chainDirectory) await chainDirectory.verifyRegistration(registration);
+        if (chainDirectory) await chainDirectory.verifyRegistration(registration, signal);
         const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
         require(!registration.payments || registration.payments.challenge === challenge,
           "Node challenge mismatch. Stale attestation refused.");
@@ -898,6 +920,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
           checked.chainTunnels = direct.entries;
           checked.connection = direct.connection;
           checked.directory = "chain";
+          checked.invalidateDirectory = () => directoryLookup().invalidate();
         }
         node = checked;
         $("node-status").textContent = "Node verified · Apple enrollment (" +
@@ -1071,7 +1094,12 @@ async function main() {
     await store("client", client);
   }
   credit = await startupStep("local-credit", () => new Credit(cfg, client, render).init());
-  continuity = continuityUI({ keys, credit, cfg, api, error, beforeExport: async () => {
+  continuity = continuityUI({ keys, credit, cfg, api, error, beforeSwitch: async () => {
+    require(!agent?.state.isStreaming, "Cancel the current reply before switching wallets.");
+    await saveCurrentChat();
+    if (guest?.lease) await guest.end();
+    if (sync) await sync.flush();
+  }, beforeExport: async () => {
     require(keys.bundle, "Start fresh or recover your wallet first.");
     if (sync) await sync.flush();
   } });

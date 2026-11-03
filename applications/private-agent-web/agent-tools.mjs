@@ -1,3 +1,5 @@
+import { replyFailure } from "./reply-recovery.mjs";
+import { readWithRetry } from "./network-read.mjs";
 import { Client, parseJSONRPCMessage, serializeMessage } from "@modelcontextprotocol/client";
 import { createLibp2p } from "libp2p";
 import { webSockets } from "@libp2p/websockets";
@@ -113,24 +115,38 @@ export class GuestSession {
       name: tool.name, label: tool.name, description: tool.description,
       parameters: tool.inputSchema,
       execute: async (_id, args, signal, onUpdate) => {
-        const client = await this.ensure(signal, tool.name === "bash" ? Number(args.timeout || this.environment?.commandTimeoutSeconds || 120) : 5);
-        // A handover can select a fresh guest after the model request began.
-        if (this.firstPrompt !== undefined && this.node.policy.monitor?.name === "baseline-pg2") await this.checkPreflight(client, signal);
-        performance.mark("dsmack:tool:start", { detail: tool.name });
-        const messages = this.record?.agent.state.messages || [];
-        const assistant = messages.findLast(message => message.role === "assistant");
-        const result = await client.callTool({ name: tool.name, arguments: args,
-          ...(this.node.policy.monitor?.name === "baseline-pg2" ? { _meta: { "dsmack/monitorResponse": JSON.stringify(assistant?.content) } } : {}),
-        }, {
-          signal, timeout: this.environment.commandTimeoutSeconds * 1000 + 15000,
-          onprogress: p => {
-            if (p.message) onUpdate?.({ content: [{ type: "text", text: p.message }], details: { progress: p.progress } });
-          },
-        });
-        performance.mark("dsmack:tool:end", { detail: tool.name });
-        this.lastActivity = Date.now();
-        await this.status();
-        return { content: result.content, isError: !!result.isError, details: result._meta?.["dsmack/piDetails"] || result.structuredContent || {} };
+        try {
+          const client = await this.ensure(signal, tool.name === "bash" ? Number(args.timeout || this.environment?.commandTimeoutSeconds || 120) : 5);
+          // A handover can select a fresh guest after the model request began.
+          if (this.firstPrompt !== undefined && this.node.policy.monitor?.name === "baseline-pg2") await this.checkPreflight(client, signal);
+          performance.mark("dsmack:tool:start", { detail: tool.name });
+          const messages = this.record?.agent.state.messages || [];
+          const assistant = messages.findLast(message => message.role === "assistant");
+          let result;
+          try { result = await client.callTool({ name: tool.name, arguments: args,
+            ...(this.node.policy.monitor?.name === "baseline-pg2" ? { _meta: { "dsmack/monitorResponse": JSON.stringify(assistant?.content) } } : {}),
+          }, {
+            signal, timeout: this.environment.commandTimeoutSeconds * 1000 + 15000,
+            onprogress: p => {
+              if (p.message) onUpdate?.({ content: [{ type: "text", text: p.message }], details: { progress: p.progress } });
+            },
+          });
+          } catch (error) {
+            if (!signal?.aborted && (!this.client || /closed|disconnect|transport/i.test(error.message))) {
+              throw Object.assign(new Error("Mac guest disconnected. The command may have run; check the workspace before running it again.", { cause: error }), { code: "GUEST_DISCONNECTED" });
+            }
+            throw error;
+          }
+          performance.mark("dsmack:tool:end", { detail: tool.name });
+          this.lastActivity = Date.now();
+          // A lost billing/status read must not discard a command's received result.
+          await this.status().catch(error => this.changed({ state: "error", error: replyFailure(error).message }));
+          return { content: result.content, isError: !!result.isError, details: result._meta?.["dsmack/piDetails"] || result.structuredContent || {} };
+        } catch (error) {
+          const failure = replyFailure(error);
+          if (!["browser", "offline", "broker", "guest", "capacity"].includes(failure.category)) throw error;
+          throw Object.assign(new Error(failure.message, { cause: error }), { code: error.code, status: error.status, ref: error.ref });
+        }
       },
     }));
   }
@@ -194,7 +210,7 @@ export class GuestSession {
     performance.mark("dsmack:reconnect:start");
     this.changed({ state: "reconnecting", lease: this.lease, node: this.node.registration });
     const prior = this.node.registration;
-    const verified = await this.reverify({ registration: prior, signal });
+    const verified = await this.reverify({ registration: prior, signal, directory: this.node.directory, browserPeer: this.peer });
     const fresh = verified.registration;
     require(fresh.relay_peer === prior.relay_peer && fresh.attestation.run === prior.attestation.run &&
       fresh.payments.runId === prior.payments.runId && fresh.receipt_key === prior.receipt_key &&
@@ -266,13 +282,19 @@ export class GuestSession {
     return client;
   }
   async connect(verified, signal, resume = false) {
+    try { return await this.connectGuest(verified, signal, resume); }
+    catch (error) { verified.invalidateDirectory?.(); throw error; }
+  }
+  async connectGuest(verified, signal, resume) {
     const peer = this.peer;
     performance.mark("dsmack:tunnels:start");
     let tunnelEntries = verified.chainTunnels;
     if (!tunnelEntries) {
-      const response = await fetch(this.cfg.tunnels || this.cfg.broker + "/tunnels", { signal, redirect: "error", cache: "no-store" });
-      require(response.ok, "Guest relay discovery through the broker failed (HTTP " + response.status + "). Directory: broker.");
-      tunnelEntries = await response.json();
+      tunnelEntries = await readWithRetry(async () => {
+        const response = await fetch(this.cfg.tunnels || this.cfg.broker + "/tunnels", { signal, redirect: "error", cache: "no-store" });
+        if (!response.ok) throw Object.assign(new Error("Guest relay discovery through the broker failed (HTTP " + response.status + "). Directory: broker."), { status: response.status });
+        return await response.json();
+      }, signal);
     }
     const measured = JSON.parse(new TextDecoder().decode(verified.policy.manifest));
     const relayPeer = JSON.parse(measured.docker_compose_file).services.node.command[1].split("/").at(-1);

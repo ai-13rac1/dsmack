@@ -755,3 +755,26 @@ test("duplicate signed chat dispatches and reserves once, including after restar
   const changed = await f.signed("chat", { ...request, sig: undefined, body: { ...request.body, max_tokens: 1 } });
   await assert.rejects(f.inference.chat(changed), code("REQUEST_REPLAY"));
 });
+
+
+test("the 278-byte usage check reports already sent after duplicate delivery or restart without another charge", async () => {
+  const f = fixture(); await f.credit();
+  const session = await f.prepare(), encrypted = await f.encrypted(session);
+  await (await f.inference.chat(await f.signed("chat", encrypted))).text();
+  const request = await f.signed("usage");
+  assert.equal(Buffer.byteLength(JSON.stringify(request)), 278);
+  const results = await Promise.allSettled([f.inference.usage(request), f.inference.usage(request)]);
+  const first = results.find(result => result.status === "fulfilled").value;
+  const duplicate = results.find(result => result.status === "rejected").reason;
+  assert.equal(duplicate.code, "REQUEST_ALREADY_SENT");
+  assert.match(duplicate.message, /usage check was already sent.*new signed request/);
+  assert.equal(first.spentNanoUsd, "300");
+  assert.equal(first.usedTokens, "8");
+  const restarted = new Inference({ payments: new Payments({ cfg: {}, key: {}, state: f.saved(), quorum: {}, save: async () => {} }),
+    cfg: { model: MODEL }, provider: f.provider, now: () => 2000000000 });
+  await assert.rejects(restarted.usage(request), code("REQUEST_ALREADY_SENT"));
+  assert.deepEqual(await restarted.usage(await f.signed("usage")), first);
+  assert.equal(f.calls(), 1);
+  const reusedNonce = await f.signed("credit", { nonce: request.nonce });
+  await assert.rejects(restarted.credit(reusedNonce), code("REQUEST_REPLAY"));
+});

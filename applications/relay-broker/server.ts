@@ -385,7 +385,8 @@ async function dispatchRequest(req: Request, b: Broker, ctx: Context | undefined
         if (ranked.some(node => node.available)) response = Response.json(ranked);
         else {
           const retryAfterSeconds = busyRetrySeconds(nodes, b.payments?.state.agentSessions, b.now());
-          response = Response.json({ error: { code: "FLEET_BUSY", message: `busy, retry in ${retryAfterSeconds} seconds`, retryAfterSeconds } },
+          const code = currentFleet.some(mac => mac.online) ? "FLEET_BUSY" : "FLEET_EMPTY";
+          response = Response.json({ error: { code, message: `${code === "FLEET_BUSY" ? "All Macs are busy" : "No Macs are connected"}, retry in ${retryAfterSeconds} seconds`, retryAfterSeconds } },
             { status: 503, headers: { "retry-after": String(retryAfterSeconds) } });
         }
       }

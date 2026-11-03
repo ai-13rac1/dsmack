@@ -1,4 +1,5 @@
 import { Interface, keccak256, verifyMessage } from "npm:ethers@6.17.0";
+import { readWithRetry, pause } from "./network-read.mjs";
 import { address, tunnel } from "../browser-p2p/tunnels.mjs";
 
 const index = new Interface(["function owner() view returns (address)", "function entries() view returns (string)"]);
@@ -12,17 +13,19 @@ const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const need = (ok, message) => { if (!ok) throw Error("Chain directory: " + message); };
 
 async function rpc(url, method, params, signal, fetcher) {
-  const response = await fetcher(url, {
-    method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000),
-  });
-  need(response.ok, `${new URL(url).hostname} could not read ${method} (HTTP ${response.status}).`);
-  const text = await response.text();
-  need(text.length <= 1 << 20, "RPC response is too large.");
-  const reply = JSON.parse(text);
-  need(!reply.error && reply.result !== undefined, `${new URL(url).hostname} could not read ${method}: ${reply.error?.message || "missing result"}.`);
-  return reply.result;
+  return readWithRetry(async () => {
+    const response = await fetcher(url, {
+      method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000),
+    });
+    need(response.ok, `${new URL(url).hostname} could not read ${method} (HTTP ${response.status}).`);
+    const text = await response.text();
+    need(text.length <= 1 << 20, "RPC response is too large.");
+    const reply = JSON.parse(text);
+    need(!reply.error && reply.result !== undefined, `${new URL(url).hostname} could not read ${method}: ${reply.error?.message || "missing result"}.`);
+    return reply.result;
+  }, signal);
 }
 
 async function agreed(snapshot, method, params, signal, fetcher) {
@@ -66,8 +69,9 @@ export function signedTunnelNodes(value, publisher, now = Math.floor(Date.now() 
     try { signer = verifyMessage("dsmack-tunnels/1\n" + canonical(unsigned), signature); }
     catch { throw Error("Chain directory: tunnel publisher signature is invalid."); }
     need(same(signer, publisher), "tunnel publisher signature is invalid.");
-    need(Number.isSafeInteger(unsigned.expiresAt) && unsigned.expiresAt > now && unsigned.expiresAt <= now + 3600,
-      "signed tunnel publication has expired or has an invalid expiry.");
+    need(Number.isSafeInteger(unsigned.expiresAt) && unsigned.expiresAt <= now + 3600,
+      "signed tunnel publication has an invalid expiry.");
+    if (unsigned.expiresAt <= now) throw Object.assign(Error("Chain directory: signed tunnel publication has expired."), { code: "PUBLICATION_EXPIRED" });
     need(envelope.entries.length <= 32, "too many tunnel entries.");
     for (const value of envelope.entries) {
       const entry = tunnel(value);
@@ -122,10 +126,12 @@ export async function discoverChainNodes({ config, signal, fetcher = fetch, now 
   }
   const [entries] = await call(snapshot, settings.registry, index, "entries", [], signal, fetcher);
   need(entries.length <= 16384, "TunnelIndex entries are too large.");
-  const nodes = signedTunnelNodes(JSON.parse(entries), owner, now);
+  const publication = JSON.parse(entries);
+  const nodes = signedTunnelNodes(publication, owner, now);
+  const expiresAt = Math.min(...(Array.isArray(publication) ? publication : [publication]).map(value => value.expiresAt));
   return {
-    nodes, ...snapshot, snapshot,
-    verifyRegistration: registration => verifyChainRegistration(registration, { snapshot, config, signal, fetcher }),
+    nodes, expiresAt, ...snapshot, snapshot,
+    verifyRegistration: (registration, signal) => verifyChainRegistration(registration, { snapshot, config, signal, fetcher }),
   };
 }
 
@@ -144,4 +150,25 @@ export async function verifyChainRegistration(registration, { snapshot, config, 
   need(same(node.composeHash, "0x" + registration.manifest_sha256) && same(node.imageHash, "0x" + registration.os_image_hash),
     "guest compose or image differs from its registered UsageEscrow class.");
   return { blockNumber: snapshot.blockNumber, blockHash: snapshot.blockHash, providers: [...snapshot.providers], node: p.node };
+}
+
+// Keep the verified snapshot in this page until its signed tunnels expire.
+export function chainDirectoryCache({ config, lookup = discoverChainNodes, now = () => Date.now() / 1000,
+  publisherOnline, sleep = pause }) {
+  let cached;
+  return {
+    invalidate() { cached = undefined; },
+    async read({ signal } = {}) {
+      if (cached?.expiresAt > now()) return cached;
+      // The pool ticks every 2s and publishes changes at most every 60s.
+      // Give a publication already in progress three ticks to land, then fail.
+      for (let attempt = 0; ; attempt++) {
+        try { cached = await lookup({ config, signal }); return cached; }
+        catch (error) {
+          if (error.code !== "PUBLICATION_EXPIRED" || attempt === 3 || !await publisherOnline(signal)) throw error;
+          await sleep(2000, signal);
+        }
+      }
+    },
+  };
 }
