@@ -67,8 +67,8 @@ class PoolTests(unittest.TestCase):
     def test_failed_slot_does_not_stop_other_slot_rotation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); instance = self.instance(root)
-            instance.slots[0]['stopped'] = True
-            instance.slots.append(dict(instance.slots[0], slot_id=1, stopped=False))
+            instance.slots[0]['retry_at'] = float('inf')
+            instance.slots.append(dict(instance.slots[0], slot_id=1, retry_at=0))
             instance.tick()
             instance.launch.assert_called_once_with(instance.slots[1])
             self.assertFalse(instance.stopping)
@@ -149,7 +149,7 @@ class PoolTests(unittest.TestCase):
         instance.boot_lock = None
         instance.active = []; instance.stopping = False; instance.failure = None
         instance.errors_file = root/'operator-errors.json'
-        instance.slots = [{'slot_id': 0, 'consecutive_failures': 0, 'last_error': None, 'retry_pending': False, 'stopped': False, 'jobs_served': 0}]; instance.last_broker_error = None; instance.errors = []
+        instance.slots = [{'slot_id': 0, 'consecutive_failures': 0, 'last_error': None, 'retry_pending': False, 'jobs_served': 0}]; instance.last_broker_error = None; instance.errors = []
         instance.measurement = 'compose'; instance.image = 'image'; instance.last_status_poll = pool.time.monotonic()
         instance.event = Mock(); instance.launch = Mock()
         return instance
@@ -188,26 +188,56 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(instance.slots[0]['consecutive_failures'], 1)
             self.assertFalse(instance.stopping); instance.launch.assert_called_once()
 
-    def test_three_consecutive_failures_stop_only_that_slot(self):
+    def test_idle_guest_end_without_agent_receipts_is_not_a_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); instance = self.instance(root)
-            for number in range(1, 4):
+            instance.slots[0].update(consecutive_failures=6, retry_at=float('inf'), last_error={'stage': 'old_failure'})
+            node = self.failed_node(root/'idle'); node['node'] = {'relay_peer': 'was-ready'}
+            instance.active = [node]
+            result = {'outputs': {'status': 'failed', 'exit_code': 0, 'missing': ['agent-receipts']}}
+            with patch.object(pool, 'guest_result', return_value=result), patch.object(pool, 'guest_closed', return_value=True), \
+                    patch.object(pool, 'preserve_and_retire', return_value={}):
+                instance.tick()
+            self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
+            self.assertEqual(instance.slots[0]['retry_at'], 0)
+            self.assertIsNone(instance.slots[0]['last_error'])
+            self.assertFalse(instance.stopping)
+
+    def test_repeated_guest_failures_back_off_to_thirty_minutes_and_keep_retrying(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); instance = self.instance(root)
+            clock = 1000
+            for number, delay in enumerate([0, 0, 60, 120, 240, 480, 960, 1800, 1800], 1):
                 node = self.failed_node(root/str(number)); instance.active = [node]
-                failure = {'stage': 'broker registration', 'status': 403, 'body': 'refused-'+str(number), 'error': 'HTTP 403'}
+                failure = {'stage': 'broker_registration', 'status': 403, 'body': 'refused-'+str(number), 'error': 'HTTP 403'}
                 with patch.object(pool, 'guest_result', return_value={'error': failure}), \
-                        patch.object(pool, 'preserve_and_retire', return_value={}):
+                        patch.object(pool, 'preserve_and_retire', return_value={}), \
+                        patch.object(pool.time, 'monotonic', return_value=clock):
                     instance.tick()
-            self.assertFalse(instance.stopping); self.assertTrue(instance.slots[0]['stopped'])
-            self.assertEqual(instance.slots[0]['consecutive_failures'], 3)
-            self.assertIn('refused-3', instance.slots[0]['last_error']['body'])
-            self.assertEqual(instance.launch.call_count, 2)
-            self.assertEqual(instance.event.call_args.kwargs['last_error'], failure)
+                self.assertEqual(instance.slots[0]['consecutive_failures'], number)
+                if delay:
+                    self.assertEqual(instance.slots[0]['retry_at'], clock+delay)
+                    with patch.object(pool.time, 'monotonic', return_value=clock+delay-1):
+                        instance.tick()
+                    calls = instance.launch.call_count
+                    with patch.object(pool.time, 'monotonic', return_value=clock+delay):
+                        instance.tick()
+                    self.assertEqual(instance.launch.call_count, calls+1)
+                clock += delay+1
+            self.assertFalse(instance.stopping)
+            instance.config = dict(max_guests=1); instance.hardware = {}; instance.payments = dict(node='class')
+            # No guest remains to explain the failure; keep its code in the next heartbeat.
+            with patch.object(pool.time, 'monotonic', return_value=clock-2):
+                slot = instance.snapshot()['slots'][0]
+            self.assertEqual(slot['state'], 'failed')
+            self.assertEqual(slot['last_error_code'], 'HTTP_403')
+            self.assertIn('refused-9', slot['last_error'])
 
     def test_rpc_refusals_back_off_without_consuming_guest_strikes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); instance = self.instance(root)
             failure = {'stage': 'broker_registration', 'status': 403,
-                       'body': 'refused: RPC quorum disagreement/unavailable: eth_call', 'error': 'HTTP 403'}
+                       'body': 'refused: RPC unavailable (Base Sepolia): tenderly: RPC HTTP 429', 'error': 'HTTP 403'}
             for attempt, delay in enumerate([60, 120, 240, 480, 900, 900, 900]):
                 node = self.failed_node(root/str(attempt)); instance.active = [node]
                 with patch.object(pool, 'guest_result', return_value={'error': failure}), \
@@ -216,7 +246,7 @@ class PoolTests(unittest.TestCase):
                     instance.tick()
                 self.assertEqual(instance.slots[0]['broker_backoff'], delay)
                 self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
-                self.assertFalse(instance.slots[0]['stopped'])
+                self.assertFalse(instance.stopping)
             instance.launch.assert_not_called()
             with patch.object(pool.time, 'monotonic', return_value=instance.slots[0]['retry_at']+1):
                 instance.tick()
@@ -232,7 +262,8 @@ class PoolTests(unittest.TestCase):
                         patch.object(pool, 'guest_closed', return_value=False), \
                         patch.object(pool, 'preserve_and_retire', return_value={}):
                     instance.tick()
-            self.assertTrue(instance.slots[0]['stopped'])
+            self.assertEqual(instance.slots[0]['consecutive_failures'], 3)
+            self.assertGreater(instance.slots[0]['retry_at'], pool.time.monotonic())
 
     def test_unreachable_broker_delays_boot_and_does_not_consume_a_strike(self):
         with tempfile.TemporaryDirectory() as tmp:

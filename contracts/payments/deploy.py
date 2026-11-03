@@ -10,7 +10,7 @@ import time
 
 from eth_account import Account
 from eth_utils import keccak, to_checksum_address
-from rpc import CHAIN_ID, Quorum, call
+from rpc import CHAIN_ID, ChainReader
 
 OWNER = "0x1FBe7a7b3f7a37A967F3d927Abd6f04DB2766c5b"
 MIN_RESERVE_WEI = 20_000_000_000_000_000
@@ -47,8 +47,9 @@ def wait_receipt(quorum, tx_hash):
     raise RuntimeError(f"receipt timeout; inspect transaction before rerunning: {tx_hash}")
 
 
-def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_reserve_wei=MIN_RESERVE_WEI, balance_block="finalized", rpc_call=call):
-    # Pending nonce must agree too; a chainId=84532 signature cannot replay on mainnet.
+def send(account, quorum, output, label, *, value=0, data="0x", to=None, min_reserve_wei=MIN_RESERVE_WEI, balance_block="finalized", rpc_call=None):
+    # Read the pending nonce before signing; a chainId=84532 signature cannot replay on mainnet.
+    rpc_call = rpc_call or quorum.request
     tx = {"chainId": CHAIN_ID, "nonce": int(quorum.read("eth_getTransactionCount", [account.address, "pending"]), 16),
           "value": value, "data": data}
     if to:
@@ -98,7 +99,7 @@ def main():
     usdc = os.environ.get("PAYMENTS_USDC", "")
     if not re.fullmatch(r"0x[0-9a-fA-F]{40}", usdc) or int(usdc, 16) == 0:
         raise ValueError("PAYMENTS_USDC must name the Base Sepolia USDC token")
-    quorum = Quorum(tuple(os.environ.get("PAYMENTS_RPC_URLS", "").split(","))) if os.environ.get("PAYMENTS_RPC_URLS") else Quorum()
+    quorum = ChainReader(tuple(os.environ.get("PAYMENTS_RPC_URLS", "").split(","))) if os.environ.get("PAYMENTS_RPC_URLS") else ChainReader()
     header = quorum.finalized()
     if int(quorum.at("eth_getBalance",[account.address],header),16)<20_000_000_000_000_000:
         raise RuntimeError("funding wallet has not reached 0.02 ETH")

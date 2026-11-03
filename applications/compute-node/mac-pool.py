@@ -13,9 +13,9 @@ from heartbeat import Publisher
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def republish(publish,hint,chain):
+def republish(publish,entries,chain):
     try:
-        publish([hint],chain)
+        publish(entries,chain)
         return True
     except (subprocess.CalledProcessError,subprocess.TimeoutExpired) as error:
         print(json.dumps(dict(event='periodic-publication-failed',error=type(error).__name__,
@@ -146,6 +146,78 @@ def stop_transports(processes, grace_seconds=60):
     return groups
 
 
+def process_command(pid):
+    result = subprocess.run(['ps', '-o', 'command=', '-p', str(pid)], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def record_transports(path, owner, processes):
+    """Record transport groups next to the launcher's generations so a successor can reap them."""
+    record = dict(owner=owner, ownerCommand=process_command(owner),
+                  groups=[dict(pid=proc.pid, command=process_command(proc.pid)) for proc in processes])
+    path.with_suffix('.tmp').write_text(json.dumps(record)); path.with_suffix('.tmp').replace(path)
+
+
+def reap_orphan_transports(path, grace_seconds=10):
+    """Stop transports left by a dead predecessor (killed or crashed before stop_transports ran)."""
+    if not path.exists():
+        return []
+    record = json.loads(path.read_text())
+    if record['owner'] != os.getpid() and record['ownerCommand'] and process_command(record['owner']) == record['ownerCommand']:
+        raise RuntimeError('pool %d still owns the transports recorded in %s' % (record['owner'], path))
+    reaped = []
+    for group in record['groups']:
+        leader = process_command(group['pid'])
+        # A dead leader's pgid can only still be held by its own descendants.
+        if (group['command'] and leader == group['command']) or (leader is None and transport_group_running(group['pid'])):
+            try:
+                os.killpg(group['pid'], signal.SIGTERM); reaped.append(group['pid'])
+            except ProcessLookupError:
+                pass
+    deadline = time.monotonic() + grace_seconds
+    while any(transport_group_running(group) for group in reaped) and time.monotonic() < deadline:
+        time.sleep(.1)
+    for group in reaped:
+        if transport_group_running(group):
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    path.unlink()
+    return reaped
+
+
+class RestartBackoff:
+    """Count unfinished starts across launchd's fresh state directories."""
+    def __init__(self, path):
+        self.path = path
+        self.healthy_since = None
+
+    def begin(self, stopped):
+        record = json.loads(self.path.read_text()) if self.path.exists() else dict(failures=0, retry_at=0)
+        delay = max(0, record['retry_at']-time.time())
+        if delay:
+            print(json.dumps(dict(event='launcher_retry', failures=record['failures'], retrySeconds=delay)), flush=True)
+        while not stopped() and time.time() < record['retry_at']:
+            time.sleep(min(1, max(0, record['retry_at']-time.time())))
+        if stopped():return False
+        failures = record['failures']+1
+        delay = min(1800, 60 * 2**min(failures-1, 5))
+        temporary = self.path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(dict(failures=failures, retry_at=time.time()+delay)))
+        temporary.replace(self.path)
+        return True
+
+    def tick(self, snapshot):
+        if not any(slot['state'] in ('ready', 'busy') for slot in snapshot.get('slots', [])):
+            self.healthy_since = None
+        elif self.healthy_since is None:
+            self.healthy_since = time.monotonic()
+        elif time.monotonic()-self.healthy_since >= 600 and self.path.exists():
+            self.path.unlink()
+            print(json.dumps(dict(event='launcher_backoff_reset')), flush=True)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('runner','workload','state','relay','relay-key','cloudflared','publisher-key'):
@@ -177,8 +249,12 @@ def main():
     for path in (a.relay,a.relay_key,a.cloudflared,a.publisher_key):
         if not path.is_file():raise FileNotFoundError(path)
     while not a.adopt_launcher:
-        try:preflight(a.state,[],coexist_pools=a.coexist_pool);break
+        try:preflight(a.state,[],coexist_pools=a.coexist_pool+[a.state.parent]);break  # a killed predecessor's guests drain on their own
         except MacOccupied:print('waiting for the active Mac lane',flush=True);time.sleep(10)
+    transport_record=a.state.parent/'transports.json'
+    if not a.adopt_launcher:
+        reaped=reap_orphan_transports(transport_record)
+        if reaped:print(json.dumps(dict(event='reaped_orphan_transports',groups=reaped)),flush=True)
     stopping=False;reload_requested=False;children=[];transports=[];logs=[];pools=None;handoff=None;published=False;published_entries=[]
     def stop(*_):
         nonlocal stopping
@@ -192,7 +268,7 @@ def main():
         log=(a.state/name).open('w');logs.append(log)
         proc=subprocess.Popen([str(x) for x in command],stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=transport)
         children.append(proc)
-        if transport:transports.append(proc)
+        if transport:transports.append(proc);record_transports(transport_record,os.getpid(),transports)
         return proc
     def ready(path,pattern,seconds):
         deadline=time.monotonic()+seconds
@@ -237,7 +313,7 @@ def main():
         (out/'entries.json').write_text(json.dumps(entries))
         return out
     def run_publication(out,chain):
-        cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out]
+        cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out,'--expiry-state',a.state.parent/'publication-expiry']
         if chain:
             for url in a.publication_rpc or ['https://base-sepolia-rpc.publicnode.com', 'https://base-sepolia.gateway.tenderly.co', 'https://sepolia.base.org']:
                 cmd+=['--rpc',url]
@@ -245,7 +321,9 @@ def main():
     def publish(entries,chain):
         if chain:publish_chain(entries,pending_path,prepare,lambda out:run_publication(out,True))
         else:run_publication(prepare(entries),False)
+    backoff=RestartBackoff(a.state.parent/'launcher-backoff.json')
     try:
+        if not a.adopt_launcher and not backoff.begin(lambda:stopping):return
         if a.adopt_launcher:
             handoff=LegacyHandoff(a.adopt_launcher,a.state)
             transports.extend(handoff.transports)
@@ -267,9 +345,9 @@ def main():
             tunnel_address=public_ready(host)
             broker_host=urlsplit(a.broker).hostname;broker_address=resolve(broker_host)
             start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port',str(proxy_port),'--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
-            hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3600)
+            hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3300)
             (a.state/'locator.json').write_text(json.dumps(hint,indent=2))
-            published=True;republish(publish,hint,False);last_http=time.monotonic()
+            published=True;republish(publish,[hint],False);last_http=time.monotonic()
             last_chain_attempt=0;published_entries=[]
             if stopping:return
         publisher=Publisher(a.publisher_key,a.publisher_address,a.broker,a.pool_version,a.operator)
@@ -282,6 +360,7 @@ def main():
                     raise RuntimeError('legacy transfer failed; inspect new pool log')
                 time.sleep(.1)
             handoff.commit()
+            record_transports(transport_record,os.getpid(),transports)
         (a.state/'launcher.pid').write_text(str(os.getpid()))
         while not stopping:
             for proc in transports:
@@ -295,14 +374,15 @@ def main():
                 except (OSError,ValueError,KeyError,TypeError) as error:
                     print(json.dumps(dict(event='restart_rejected',error=str(error))),flush=True)
             snapshot=pools.tick() or {}
+            backoff.tick(snapshot)
             now=time.monotonic()
             entries=guest_entries(snapshot,hint)
             if (entries!=published_entries or pending_path.exists()) and now-last_chain_attempt>=60:
                 last_chain_attempt=now
                 published_entries=publish_directory(publish,entries,published_entries,pending_path.exists())
             if now-last_http>=60:
-                hint['expiresAt']=int(time.time())+3600
-                republish(publish,hint,False);last_http=time.monotonic()
+                hint['expiresAt']=int(time.time())+3300
+                republish(publish,[hint],False);last_http=time.monotonic()
             time.sleep(2)
     finally:
         if a.adopt_launcher and (handoff is None or not handoff.committed):
@@ -312,17 +392,17 @@ def main():
             for log in logs:log.close()
         else:
             finish(pools, published, published_entries, pending_path, publish, transports, logs, children, a.state)
+            if stopping:(a.state.parent/'launcher-backoff.json').unlink(missing_ok=True)  # a requested stop is not a failed start
 
 def finish(pools, published, published_entries, pending_path, publish, transports, logs, children, state):
-    if pools:
-        try:pools.stop()
-        except subprocess.TimeoutExpired:raise RuntimeError('warm guests still active; owned transport retained')
     try:
+        if pools:pools.stop()
         if published:
             publish_directory(publish,[],published_entries,pending_path.exists())
-            publish([],False)
+            republish(publish,[],False)
     finally:
         groups=stop_transports(transports)
+        (state.parent/'transports.json').unlink(missing_ok=True)
         for log in logs:log.close()
         (state/'stopped.json').write_text(json.dumps(dict(stoppedAt=int(time.time()),
             ownedChildrenStopped=all(c.poll() is not None for c in children),

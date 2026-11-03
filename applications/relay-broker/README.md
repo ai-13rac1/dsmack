@@ -21,6 +21,10 @@ Both endpoints allow public CORS reads.
 
 ## Configure and run
 
+Set `rpcs` to an ordered list of Base Sepolia RPCs for chain verification and
+continuity. It defaults to `rpc` followed by the public Base Sepolia providers.
+`continuity.rpcs` selects a separate ordered list for the sync anchor.
+
 Start with `config.example.json`; set the RPC, App Attest registries and approved
 workload tuples (`manifest_sha256`, `os_image_hash`, `cdhash`, `service`). Compute
 the manifest SHA-256 from the exact compose bytes and obtain the image hash from

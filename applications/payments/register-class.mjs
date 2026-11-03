@@ -1,7 +1,7 @@
 // Register immutable class measurements and the broker before any VM starts.
 import { json, require } from "./schema.mjs";
 import { sender } from "./submit.mjs";
-import { confirmedTransactions, Quorum } from "./quorum.mjs";
+import { confirmedTransactions, ChainReader } from "./chain-reader.mjs";
 import { linkedOperator } from "./mac-operator.mjs";
 const [config, key, manifestPath, brokerUrl, publisher] = Deno.args;
 require(publisher, "usage: register-class.mjs CONFIG FUNDING_KEY MANIFEST BROKER PUBLISHER");
@@ -23,7 +23,7 @@ const ownership = await fetch(brokerUrl.replace(/\/$/, "") + "/fleet/ownership?"
 require(ownership.ok, "Mac ownership lookup failed");
 const operator = linkedOperator(await ownership.json(), cfg.escrow, publisher, kid);
 require(operator === measured.operator.toLowerCase(), "guest class differs from linked Mac operator; pack a new class");
-const s = await new Quorum(cfg).snapshot(),
+const s = await new ChainReader(cfg).snapshot(),
   { wallet, contract } = await sender(cfg, key);
 require(
   (await s.call("owner")).toLowerCase() === wallet.address.toLowerCase(),

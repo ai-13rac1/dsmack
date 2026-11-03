@@ -12,10 +12,13 @@ the guest's first authenticated receipt is accepted. An unused grant costs zero.
 Set `payments.prices.S1.nanoUsdPerSecond` and `minimumSeconds: 60` in broker config.
 `payments.inferenceOperator` receives claims for provider inference costs.
 
-Set `payments.rpcs` to at least three independent RPC hosts. Every quorum read
-requires `floor(N / 2) + 1` matching replies from the configured list, even when
-some hosts are unavailable. `PAYMENTS_RPC_URLS`, a comma-separated list, selects
-providers when generating configuration with `configure.mjs`.
+Set `payments.rpcs` to an ordered list of Base Sepolia RPC URLs. One healthy
+provider supplies a finalized snapshot. State reads use its EIP-1898 block hash;
+a replacement provider checks the same block number and hash before serving it.
+HTTP 429 and RPC quota errors put that provider on exponential backoff (1–60
+seconds, extended by `Retry-After`). Chain ID, freshness and deployed code pins
+are checked before credit is issued. `PAYMENTS_RPC_URLS`, a comma-separated list,
+selects providers when generating configuration with `configure.mjs`.
 
 The owner pins the broker once with `registerBroker` and registers immutable
 operator, unit, compose and image measurements with `registerNode`. The guest's
