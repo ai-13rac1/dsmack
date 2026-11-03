@@ -96,6 +96,18 @@ test("a session on a guest that is no longer live does not hold the wallet slot"
  assert(next.sessionId);
 });
 
+test("ending a session frees the wallet slot before its guest finishes",async()=>{
+ const f=await fixture();
+ const other={...f.node,relay_peer:peer+"-other"};
+ f.broker.live=()=>[other,f.node];
+ f.setSlots([{slot_id:1,state:"ready",relay_peer:other.relay_peer},{slot_id:0,state:"ready",relay_peer:f.node.relay_peer}]);
+ const first=await f.sessions.open(await f.signed("agent-open",{conversationId:"old",client_peer:peer,node_peer:other.relay_peer}));
+ await f.sessions.receipt(await f.receipt(first.sessionId,1));
+ await f.sessions.status(await f.signed("agent-end",{sessionId:first.sessionId}),true);
+ const next=await f.sessions.open(await f.signed("agent-open",{conversationId:"new",client_peer:peer,node_peer:f.node.relay_peer}));
+ assert(next.sessionId);
+});
+
 test("configured wallet slot limit persists across session handlers and ending a stay frees one slot",async()=>{
  const f=await fixture({agentCfg:{maxActiveSessionsPerWallet:2}});
  const nodes=Array.from({length:3},(_,i)=>({...f.node,relay_peer:peer+"-slot-"+i}));

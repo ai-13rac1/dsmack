@@ -29,9 +29,9 @@ export class AgentSessions {
   }
   /** @param {any} node @param {{publisher: string, slot_id: number} | undefined} placement */
   serving(s) {
-    // A session on a guest that is no longer live cannot serve, so it does not hold the wallet's slot.
+    // A session the owner asked to end, or on a guest that is no longer live, does not hold the wallet's slot.
     // It still reserves its Mac slot (see available): the old VM may run until its hour ends.
-    return this.active(s) && this.b.live().some(n => n.kind === "compute" && n.relay_peer === s.grant.relay_peer);
+    return this.active(s) && !s.endRequested && this.b.live().some(n => n.kind === "compute" && n.relay_peer === s.grant.relay_peer);
   }
   available(node, placement = undefined) {
     return !node.telemetry?.busy && !Object.values(this.b.payments?.state.agentSessions ?? {})

@@ -917,6 +917,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
   let lastRefusal, chainDirectory, brokerFailure;
   const mark = (stage, detail) => performance.mark("dsmack:" + stage, { detail });
   const pause = milliseconds => waitForRead(milliseconds, signal);
+  let endedOther = false;
   discovery: for (;;) {
     signal?.throwIfAborted();
     mark("discovery:start");
@@ -974,8 +975,16 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
           }
           if (!["GUEST_BUSY", "NODE_NOT_LIVE"].includes(e.code)) {
             const path = chainDirectory ? `${brokerFailure} Directory: chain.` : "Directory: broker.";
+            if (e.code === "SESSION_ACTIVE" && !endedOther) {
+              // Another chat (often one already closed) holds the wallet's guest. End it and claim again.
+              endedOther = true;
+              $("node-status").textContent = "Ending your other chat's guest session…";
+              for (const sessionId of String(e.message).match(/[0-9a-f]{8}-[0-9a-f-]{27}|[0-9a-f]{32,64}/gi) || [])
+                await api("/agent/end", await walletBody(credit, "agent-end", { sessionId }));
+              continue discovery;
+            }
             if (e.code === "SESSION_ACTIVE")
-              throw new Error("Another of your chats still holds a guest. End its session there, or wait: it is released when that chat ends or its guest stops (at most an hour). " + e.message);
+              throw new Error("Another of your chats still holds a guest and is finishing its session. Retry in a minute. " + e.message);
             throw new Error(`${path} The broker could not reserve the discovered guest (${e.code || "HTTP " + e.status}): ${e.message}`);
           }
           exclude.add(peer);
