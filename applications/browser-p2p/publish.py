@@ -24,12 +24,20 @@ p.add_argument('--broker')
 p.add_argument('--operator-token',type=Path)
 p.add_argument('--publisher-address',help='Mac-local publisher address, checked before signing')
 p.add_argument('--rpc',action='append',help='ordered RPC for Mac-local zero-value locator publications; repeat for several hosts')
+p.add_argument('--expiry-state',type=Path,help='shared publication expiry across launcher generations')
 p.add_argument('--registry-owner',help='Initial publisher when deploying a registry')
 a=p.parse_args();a.evidence.mkdir(parents=True,exist_ok=True)
 def signed_publication(entries, signer):
  now=int(time.time())
  expiry=max((entry['expiresAt'] for entry in entries),default=now+3300)
  if not now<expiry<=now+3600:raise ValueError('tunnel publication expiry must be within one hour')
+ if a.expiry_state and a.expiry_state.exists():expiry=max(expiry,int(a.expiry_state.read_text())+1)
+ if expiry>now+3600:
+  time.sleep(expiry-now-3600)
+  now=int(time.time())
+ if not now<expiry<=now+3600:raise ValueError('tunnel publication expiry must be within one hour')
+ if a.expiry_state:
+  temporary=a.expiry_state.with_suffix('.tmp');temporary.write_text(str(expiry));temporary.replace(a.expiry_state)
  body={'entries':entries,'publisher':signer.address.lower(),'expiresAt':expiry}
  canonical=json.dumps(body,sort_keys=True,separators=(',',':'))
  body['signature']='0x'+signer.sign_message(encode_defunct(text='dsmack-tunnels/1\n'+canonical)).signature.hex()
@@ -57,6 +65,13 @@ def publish_broker():
      body=error.read(4097);record['body']=body[:4096].decode(errors='replace');record['body_truncated']=len(body)>4096
     except (OSError,HTTPException) as body_error:record['body_read_error']=str(body_error)
     finally:error.close()
+   if a.expiry_state and record['status']==400:
+    try:refusal=json.loads(record['body'])
+    except ValueError:refusal={}
+    if (isinstance(refusal,dict) and refusal.get('error')=='stale publisher update'
+        and type(refusal.get('expiresAt')) is int and int(time.time())<refusal['expiresAt']<=int(time.time())+3600):
+     expiry=max(int(a.expiry_state.read_text()) if a.expiry_state.exists() else 0,refusal['expiresAt'])
+     temporary=a.expiry_state.with_suffix('.tmp');temporary.write_text(str(expiry));temporary.replace(a.expiry_state)
    record['retrying']=transient and attempt<3
    (a.evidence/('broker-error-'+str(attempt)+'.json')).write_text(json.dumps(record,indent=2)+'\n')
    print(json.dumps(record),flush=True)

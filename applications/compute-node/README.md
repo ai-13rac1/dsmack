@@ -108,8 +108,8 @@ Each configured slot rotates independently: a replacement starts after 450
 seconds, the old guest stops admitting at 570 seconds and exits at 840 seconds.
 Up to two generations per slot overlap during handover. Boot registration is
 serialized to associate each guest's broker identity with its owned VM. A failed
-guest is preserved, retired and replaced. Three consecutive failures stop only
-that slot; successful retirement resets its failure count. Other slots continue.
+guest is preserved, retired and replaced. After three consecutive failures a slot
+retries with exponential backoff up to 30 minutes; successful retirement resets its failure count. Other slots continue.
 The preflight requires 12 GiB free and waits while another lane owns a VM.
 
 The Mac posts signed fleet heartbeats every 15 seconds with the operator config,
@@ -147,7 +147,8 @@ clears its discovery hints, and stops its relay, tunnel and helper. Each
 `run-*/evidence/` directory retains the guest evidence and reclaimed-space record.
 Broker chain/RPC refusals and unreachable brokers retry after 60 seconds,
 doubling to 15 minutes without a retry limit. Guest attestation and result
-closure failures still stop a slot after three consecutive failures.
+closure failures retry with backoff up to 30 minutes after three consecutive
+failures.
 Repeat `--publication-rpc HTTPS_URL` to specify ordered publication providers.
 Each failed provider is logged; an ambiguous submission retries the same signed
 transaction and checks its receipt before completing.
@@ -169,8 +170,10 @@ python3 applications/compute-node/pool-service.py uninstall \
   --command /absolute/staging/pool-command.json
 ```
 
-The agent restarts an exited launcher after launchd's 60-second throttle. Logs
-are in the service root. Uninstall allows the launcher to drain its owned guests.
+The agent restarts an exited launcher after launchd's 60-second throttle. Failed
+starts back off up to 30 minutes before opening transports; ten minutes with ready
+or busy guests resets the backoff. Logs are in the service root. Uninstall allows
+the launcher to drain its owned guests.
 
 Restart the pool with `SIGHUP` to the launcher. It validates the replacement's
 files, measured base and template hashes and expected workload/compose hashes,
