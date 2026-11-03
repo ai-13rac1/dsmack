@@ -22,5 +22,12 @@ It cannot supply the finalized snapshots used to authorize deposit credit.
 Use the failover reader until a light client supplies authenticated finalized
 Base Sepolia headers. The fallback trusts the selected public RPC for state;
 block pinning prevents mixing snapshots, and code pins retain contract identity.
+Before this change one lying public provider was outvoted. Now a single provider
+answers the broker's trust reads: deposits and exit requests that become credit
+(`payments.mjs` `syncBalance`), node class measurements and broker signer
+(`register`), and the App Attest enrollment key, CDRegistry rpIdHash, category
+and canary reads used for guest admission. By default the list is the configured
+`rpc` followed by the public providers. A lying provider could mint credit or
+admit a guest that is not attested. This is accepted for the testnet only.
 
 The page retains its existing reader.

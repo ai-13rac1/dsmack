@@ -392,6 +392,7 @@ def main():
             for log in logs:log.close()
         else:
             finish(pools, published, published_entries, pending_path, publish, transports, logs, children, a.state)
+            if stopping:(a.state.parent/'launcher-backoff.json').unlink(missing_ok=True)  # a requested stop is not a failed start
 
 def finish(pools, published, published_entries, pending_path, publish, transports, logs, children, state):
     try:

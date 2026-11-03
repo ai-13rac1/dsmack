@@ -224,6 +224,9 @@ while the new generation fills its remaining slots. The combined heartbeat's
 `version` switches to `SOURCE_COMMIT` when the new generation takes over.
 Update the command JSON's checkout, runner, workload, operator and pool-version
 arguments to the same release for subsequent launchd starts.
+During a reload both generations run guests, up to three times the slot count
+while the old one rotates. Choose `--max-slots` so that many guests fit in the
+Mac's memory after its reserve.
 
 For a manually started launcher, write the same config at its `--restart-config`
 path and run `kill -HUP "$(cat "$STATE/launcher.pid")"`.
