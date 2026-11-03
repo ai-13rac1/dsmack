@@ -806,7 +806,7 @@ async function initChat() {
     const content = dialog.renderContent.bind(dialog);
     const download = async sessionId => {
       await saveCurrentChat();
-      const jsonl = await exportChats(storage, sessionId);
+      const jsonl = await exportChats(storage, credit.address, sessionId);
       const url = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
       const link = document.createElement("a");
       link.href = url;

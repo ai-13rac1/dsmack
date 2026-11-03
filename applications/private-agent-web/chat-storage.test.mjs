@@ -34,7 +34,7 @@ test("feedback and full tool traces survive session save, sync encoding and JSON
   ] } };
   const persist = createSessionPersistence({ storage, save: saveChat });
   await persist(session, agent);
-  const line = await exportChats(storage, session.id);
+  const line = await exportChats(storage, "0xAbc", session.id);
   const record = JSON.parse(line);
   assert.deepEqual(record.data.feedback, session.feedback);
   assert.deepEqual(record.data.messages, agent.state.messages);
@@ -45,8 +45,9 @@ test("feedback and full tool traces survive session save, sync encoding and JSON
   await storage.sessions.save(synced.data, synced.metadata);
   // An already-open session must not erase feedback saved by another tab.
   await persist({ ...session, feedback: undefined }, agent);
-  assert.deepEqual(JSON.parse(await exportChats(storage, session.id)).data.feedback, session.feedback);
+  assert.deepEqual(JSON.parse(await exportChats(storage, "0xAbc", session.id)).data.feedback, session.feedback);
   await persist({ id: "second", createdAt: session.createdAt, dsmack: {} }, agent);
-  assert.deepEqual((await exportChats(storage)).trim().split("\n").map(JSON.parse).map(r => r.data.id), [session.id, "second"]);
-  assert.equal((await exportChats(storage, session.id)).trim().split("\n").length, 1);
+  await persist({ id: "other-wallet", createdAt: session.createdAt, dsmack: { wallet: "0xdef" } }, agent);
+  assert.deepEqual((await exportChats(storage, "0xabc")).trim().split("\n").map(JSON.parse).map(r => r.data.id), [session.id, "second"]);
+  assert.equal((await exportChats(storage, "0xAbc", session.id)).trim().split("\n").length, 1);
 });

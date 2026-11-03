@@ -49,12 +49,11 @@ export async function saveChat(storage, session, agent) {
   return data;
 }
 
-export async function exportChats(storage, sessionId) {
+export async function exportChats(storage, wallet, sessionId) {
   const metadata = sessionId
     ? [await storage.sessions.getMetadata(sessionId)]
     : await storage.sessions.getAllMetadata();
-  const lines = await Promise.all(metadata.map(async metadata => JSON.stringify({
-    data: await storage.sessions.get(metadata.id), metadata,
-  })));
-  return lines.length ? lines.join("\n") + "\n" : "";
+  const rows = await Promise.all(metadata.map(async metadata => ({ data: await storage.sessions.get(metadata.id), metadata })));
+  const own = rows.filter(({ data }) => !data?.dsmack?.wallet || data.dsmack.wallet.toLowerCase() === wallet?.toLowerCase());
+  return own.length ? own.map(row => JSON.stringify(row)).join("\n") + "\n" : "";
 }
