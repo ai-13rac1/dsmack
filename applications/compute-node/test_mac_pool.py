@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 import subprocess
 import unittest
+from unittest import mock
 from unittest.mock import Mock
 
 spec = importlib.util.spec_from_file_location('mac_pool', Path(__file__).with_name('mac-pool.py'))
@@ -38,6 +39,29 @@ class PublicationTests(unittest.TestCase):
     def test_periodic_publication_does_not_mask_configuration_errors(self):
         with self.assertRaises(ValueError):
             mac_pool.republish(Mock(side_effect=ValueError('invalid publisher key')), {}, False)
+
+
+class OrphanTransportTests(unittest.TestCase):
+    def reap(self, record, commands):
+        killed = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'transports.json'; path.write_text(json.dumps(record))
+            with mock.patch.object(mac_pool, 'process_command', side_effect=lambda pid: commands.get(pid)), \
+                    mock.patch.object(mac_pool.os, 'killpg', side_effect=lambda pid, sig: killed.append((pid, sig))), \
+                    mock.patch.object(mac_pool, 'transport_group_running', return_value=False):
+                reaped = mac_pool.reap_orphan_transports(path, grace_seconds=0)
+            return reaped, killed, path.exists()
+
+    def test_dead_owner_transports_are_reaped_but_reused_pids_are_kept(self):
+        record = dict(owner=10, ownerCommand='python mac-pool.py', groups=[
+            dict(pid=11, command='mac-relay /key'), dict(pid=12, command='cloudflared tunnel')])
+        reaped, killed, kept = self.reap(record, {11: 'mac-relay /key', 12: 'some other program'})
+        self.assertEqual(reaped, [11]); self.assertEqual(killed, [(11, signal.SIGTERM)]); self.assertFalse(kept)
+
+    def test_live_owner_transports_are_left_alone(self):
+        record = dict(owner=10, ownerCommand='python mac-pool.py', groups=[dict(pid=11, command='mac-relay /key')])
+        reaped, killed, kept = self.reap(record, {10: 'python mac-pool.py', 11: 'mac-relay /key'})
+        self.assertEqual((reaped, killed, kept), ([], [], True))
 
 
 class GuestDirectoryTests(unittest.TestCase):

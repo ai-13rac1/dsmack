@@ -146,6 +146,45 @@ def stop_transports(processes, grace_seconds=60):
     return groups
 
 
+def process_command(pid):
+    result = subprocess.run(['ps', '-o', 'command=', '-p', str(pid)], capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def record_transports(path, owner, processes):
+    """Record transport groups next to the launcher's generations so a successor can reap them."""
+    record = dict(owner=owner, ownerCommand=process_command(owner),
+                  groups=[dict(pid=proc.pid, command=process_command(proc.pid)) for proc in processes])
+    path.with_suffix('.tmp').write_text(json.dumps(record)); path.with_suffix('.tmp').replace(path)
+
+
+def reap_orphan_transports(path, grace_seconds=10):
+    """Stop transports left by a dead predecessor (killed or crashed before stop_transports ran)."""
+    if not path.exists():
+        return []
+    record = json.loads(path.read_text())
+    if record['ownerCommand'] and process_command(record['owner']) == record['ownerCommand']:
+        return []
+    reaped = []
+    for group in record['groups']:
+        if group['command'] and process_command(group['pid']) == group['command']:
+            try:
+                os.killpg(group['pid'], signal.SIGTERM); reaped.append(group['pid'])
+            except ProcessLookupError:
+                pass
+    deadline = time.monotonic() + grace_seconds
+    while any(transport_group_running(group) for group in reaped) and time.monotonic() < deadline:
+        time.sleep(.1)
+    for group in reaped:
+        if transport_group_running(group):
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    path.unlink()
+    return reaped
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('runner','workload','state','relay','relay-key','cloudflared','publisher-key'):
@@ -179,6 +218,10 @@ def main():
     while not a.adopt_launcher:
         try:preflight(a.state,[],coexist_pools=a.coexist_pool);break
         except MacOccupied:print('waiting for the active Mac lane',flush=True);time.sleep(10)
+    transport_record=a.state.parent/'transports.json'
+    if not a.adopt_launcher:
+        reaped=reap_orphan_transports(transport_record)
+        if reaped:print(json.dumps(dict(event='reaped_orphan_transports',groups=reaped)),flush=True)
     stopping=False;reload_requested=False;children=[];transports=[];logs=[];pools=None;handoff=None;published=False;published_entries=[]
     def stop(*_):
         nonlocal stopping
@@ -192,7 +235,7 @@ def main():
         log=(a.state/name).open('w');logs.append(log)
         proc=subprocess.Popen([str(x) for x in command],stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,start_new_session=transport)
         children.append(proc)
-        if transport:transports.append(proc)
+        if transport:transports.append(proc);record_transports(transport_record,os.getpid(),transports)
         return proc
     def ready(path,pattern,seconds):
         deadline=time.monotonic()+seconds
