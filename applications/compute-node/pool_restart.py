@@ -10,8 +10,9 @@ from urllib.request import urlopen
 from pool import hardware, operator_config, sha, validate_config, ready_node
 
 
-def release_config(runner, workload, operator, version, peer):
+def release_config(runner, workload, operator, version, peer, source=Path(__file__).resolve().parents[2]):
     runner, workload, operator = (Path(p).resolve() for p in (runner, workload, operator))
+    source = Path(source).resolve()
     manifest = validate_config(runner, workload, operator_config(operator, hardware()))
     node = json.loads(manifest['docker_compose_file'])['services']['node']
     if node['command'][1].rsplit('/', 1)[1] != peer:
@@ -22,14 +23,14 @@ def release_config(runner, workload, operator, version, peer):
     if (not 1 <= seconds <= 3600 or not 1 <= drain < seconds
             or max(replace, seconds-replace) + 90 >= seconds-drain):
         raise ValueError('replacement must attest before admission closes')
-    return dict(runner=runner, workload=workload, operator=operator, version=version,
+    return dict(source=source, runner=runner, workload=workload, operator=operator, version=version,
                 seconds=seconds, drain=drain, replace=replace,
                 measurement=sha(workload/'compose-manifest.json'), image=manifest['base_vm']['os_image_hash'])
 
 
 def replacement(path, peer):
     value = json.loads(path.read_bytes())
-    config = release_config(value['runner'], value['workload'], value['operator'], value['pool_version'], peer)
+    config = release_config(value['runner'], value['workload'], value['operator'], value['pool_version'], peer, value['source'])
     for path, expected in ((config['workload']/'workload.img', value['workload_sha256']),
                            (config['workload']/'compose-manifest.json', value['manifest_sha256'])):
         if sha(path) != expected:
@@ -71,7 +72,7 @@ class Generations:
     def launch(self, config, adopt_state=None):
         state = self.root/('guests-'+str(time.time_ns()))
         state.mkdir()
-        command = [sys.executable, Path(__file__).with_name('pool.py'),
+        command = [sys.executable, config['source']/'applications/compute-node/pool.py',
                    '--runner', config['runner'], '--workload', config['workload'], '--state', state,
                    '--pool-root', self.root, '--broker', self.broker, '--seconds', str(config['seconds']),
                    '--drain-seconds', str(config['drain']), '--replace-after', str(config['replace']),
