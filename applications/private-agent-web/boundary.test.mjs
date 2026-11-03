@@ -79,6 +79,93 @@ async function run(name, kind, fn) {
   console.log(result.status + ": " + name);
 }
 try {
+  await run("browser-provider-key-bypasses-model-credit-and-restores-selection", "valid", async (page, calls) => {
+    const requests = [];
+    await page.route("https://model.example/v1/chat/completions", async route => {
+      requests.push({ body: route.request().postDataJSON(), headers: route.request().headers() });
+      await route.fulfill({ headers: { "content-type": "text/event-stream", "access-control-allow-origin": "*" },
+        body: 'data: {"id":"reply","choices":[{"delta":{"role":"assistant","content":"Direct provider reply."},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}\n\ndata: [DONE]\n\n' });
+    });
+    assert(!(await page.locator("#model").textContent()).includes("sees the conversation"));
+    await page.locator("#advanced summary").first().click();
+    await page.locator("#provider-settings").click();
+    await page.selectOption("#provider-choice", "openai-compatible");
+    await page.fill("#provider-model", "my-model");
+    await page.fill("#provider-url", "https://model.example/v1");
+    await page.fill("#provider-key", "browser-only-provider-secret");
+    await page.click("#provider-save");
+    await page.locator("#provider-dialog").waitFor({ state: "hidden" });
+    assert.equal(requests.length, 1, "saving checks browser connectivity with an isolated prompt");
+    assert.equal(requests[0].body.messages.at(-1).content, "Reply OK.");
+    assert.match(await page.locator("#model").textContent(), /model.example sees the conversation/);
+    assert.equal(await page.locator("#verified").isHidden(), true);
+    await page.route("**/relay-broker/inference/credit", route => route.fulfill({ headers: publicHeaders, body: JSON.stringify({
+      wallet: route.request().postDataJSON().wallet.toLowerCase(), remainingNanoUsd: "0", spentNanoUsd: "250000000", usedTokens: "0", pendingInferenceId: null,
+    }) }));
+    await send(page, "Please inspect this conversation.");
+    await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') && !document.querySelector('#chat').session.state.isStreaming);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].headers.authorization, "Bearer browser-only-provider-secret");
+    assert.match(requests[1].body.messages[0].content, /model.example.*sees the conversation/);
+    assert(!requests[1].body.messages[0].content.includes("encrypted from the browser to the NEAR model TEE"));
+    assert(requests[1].body.tools.some(tool => tool.function.name === "bash"));
+    assert(!calls.some(call => ["/inference/prepare", "/inference/chat"].includes(call.path)), "direct model tokens cannot consume broker credit");
+    const stores = await page.evaluate(async () => {
+      const db = await new Promise((resolve, reject) => { const req = indexedDB.open("dsmack-private-agent-chats"); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+      const read = name => new Promise((resolve, reject) => { const req = db.transaction(name).objectStore(name).getAll(); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+      return { keys: await read("provider-keys"), providers: await read("custom-providers"), sessions: await read("sessions"), settings: await read("settings") };
+    });
+    assert(stores.keys.includes("browser-only-provider-secret"));
+    assert(!JSON.stringify([stores.providers, stores.sessions, stores.settings, calls]).includes("browser-only-provider-secret"));
+    await page.reload();
+    await page.waitForFunction(() => document.documentElement.dataset.ready === "true");
+    assert.match(await page.locator("#model").textContent(), /model.example sees the conversation/);
+    await page.locator("#advanced summary").first().click();
+    await page.locator("#provider-settings").click();
+    assert.equal(await page.inputValue("#provider-key"), "");
+    await page.selectOption("#provider-choice", "near");
+    await page.click("#provider-save");
+    await page.locator("#provider-dialog").waitFor({ state: "hidden" });
+    assert(!(await page.locator("#model").textContent()).includes("sees the conversation"));
+    assert.match(await page.locator("#model-privacy").textContent(), /encrypted.*NEAR model TEE/);
+    assert.equal(requests.length, 2, "switching back to NEAR needs no key or connection test");
+  });
+  await run("anthropic-provider-sends-browser-header-and-accurate-preamble", "valid", async page => {
+    const requests = [];
+    await page.route("https://api.anthropic.com/v1/messages*", async route => {
+      requests.push({ body: route.request().postDataJSON(), headers: route.request().headers() });
+      await route.fulfill({ headers: { "content-type": "text/event-stream", "access-control-allow-origin": "*" }, body:
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n' });
+    });
+    await page.locator("#advanced summary").first().click();
+    await page.click("#provider-settings");
+    await page.selectOption("#provider-choice", "anthropic");
+    await page.fill("#provider-key", "sk-ant-browser-only");
+    await page.click("#provider-save");
+    await page.locator("#provider-dialog").waitFor({ state: "hidden" });
+    assert.match(await page.locator("#model").textContent(), /Anthropic sees the conversation/);
+    await send(page, "Inspect code with Anthropic.");
+    await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') && !document.querySelector('#chat').session.state.isStreaming);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].headers["anthropic-dangerous-direct-browser-access"], "true");
+    assert.equal(requests[1].headers["x-api-key"], "sk-ant-browser-only");
+    assert.match(JSON.stringify(requests[1].body.system), /Anthropic.*sees the conversation/);
+    assert(!JSON.stringify(requests[1].body.system).includes("encrypted from the browser to the NEAR model TEE"));
+  });
+  await run("browser-provider-rejects-unreachable-cors-endpoint", "valid", async page => {
+    await page.route("https://blocked.example/**", route => route.abort("failed"));
+    await page.locator("#advanced summary").first().click();
+    await page.locator("#provider-settings").click();
+    await page.selectOption("#provider-choice", "openai-compatible");
+    await page.fill("#provider-model", "my-model");
+    await page.fill("#provider-url", "https://blocked.example/v1");
+    await page.fill("#provider-key", "unsaved-key");
+    await page.click("#provider-save");
+    await page.waitForFunction(() => document.querySelector("#provider-error").textContent.includes("Browser connection failed"));
+    assert(!(await page.locator("#model").textContent()).includes("sees the conversation"));
+    await page.click("#provider-cancel");
+    await page.waitForFunction(() => document.querySelector("#provider-key").value === "");
+  });
   await run("shared-viewer-requires-own-wallet-and-keeps-encrypted-state-on-reload", "valid", async (page, calls) => {
     const sealed = await sealArtifact('<!doctype html><button id="shared-ready">Shared app</button>');
     const origin = "https://private-agent.dstack.soc1024.com";
@@ -141,6 +228,53 @@ try {
     assert(new Set(rpcReads).size === 2, "Both chain providers are checked");
     assert(!calls.some(r => r.path === "/agent/open" || r.path.includes("/attestation")));
   });
+  await run("broker-reads-retry-once-and-signed-posts-never-resend", "valid", async (page) => {
+    let reads = 0, writes = 0;
+    await page.route("**/relay-broker/inference/quote", route => ++reads === 1 ? route.abort("internetdisconnected") : route.fallback());
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
+    await page.locator("#refresh").evaluate(button => { button.closest("details").open = true; });
+    await page.locator("#refresh").click();
+    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    assert.equal(reads, 2);
+    await page.route("**/relay-broker/inference/credit", route => { writes++; return route.abort("internetdisconnected"); });
+    await page.locator("#refresh").click();
+    await alert(page, "browser lost its connection");
+    assert.equal(writes, 1, "a signed credit request is sent once");
+    assert.doesNotMatch(await page.locator("#alert").textContent(), /broker.*restarting/i);
+    reads = 0;
+    await page.route("**/relay-broker/inference/quote", route => { reads++; return route.abort("internetdisconnected"); });
+    await page.locator("#refresh").click();
+    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    assert.equal(reads, 2, "a second browser failure ends the read");
+    assert.equal(writes, 1);
+  });
+  await run("switch-wallet-requires-recovery-and-confirmation", "valid", async (page) => {
+    const wallet = await page.locator("#wallet").textContent();
+    await page.locator("#advanced").evaluate(view => { view.open = true; });
+    await page.locator("#use-another-device").click();
+    await page.locator("#switch-wallet").click();
+    await page.locator("#continuity-status").getByText(/Save a passkey or add a recovery email.*before switching/).waitFor();
+    assert.equal(await page.locator("#wallet").textContent(), wallet);
+    await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open("dsmack-private-agent", 1);
+      open.onsuccess = () => {
+        const db = open.result, tx = db.transaction("wallet", "readwrite");
+        tx.objectStore("wallet").put("saved-credential", "continuity.passkey");
+        tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error);
+      };
+    }));
+    await Promise.all([page.waitForEvent("dialog").then(dialog => dialog.dismiss()), page.locator("#switch-wallet").click()]);
+    await page.waitForFunction(() => !document.querySelector("#switch-wallet").disabled);
+    assert.equal(await page.locator("#wallet").textContent(), wallet);
+    await Promise.all([page.waitForEvent("dialog").then(dialog => { assert.match(dialog.message(), /saved passkey or email/); return dialog.accept(); }),
+      page.locator("#switch-wallet").click()]);
+    await page.locator("#welcome").waitFor({ state: "visible" });
+    await page.waitForFunction(() => document.documentElement.dataset.ready === "true");
+    assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
+    await page.locator("#start-fresh").click();
+    await page.waitForFunction(() => document.querySelector("#wallet").textContent.startsWith("0x"));
+    assert.notEqual(await page.locator("#wallet").textContent(), wallet);
+  });
   await run("first-visit-requires-choice", "valid", async (page, calls) => {
     assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
     assert(await page.locator("#start-fresh").isVisible());
@@ -200,6 +334,7 @@ try {
   await run("inline-tool-output-and-markdown-code-visible", "valid", async (page, calls) => {
     // Display fixture derived from the real guest script journey. No model or
     // guest request is made: this catches missing custom-element registration.
+    await page.locator("#sync-status").getByText("Chats checked and synced.", { exact: true }).waitFor({ state: "attached" });
     await page.evaluate(async () => {
       const chat = document.querySelector("agent-interface"), model = chat.session.state.model;
       const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,

@@ -1,3 +1,4 @@
+import { networkFailure } from "./network-read.mjs";
 // DOMException.message is read-only; retain abort identity and the original cause.
 export function referenceError(error, ref) {
   if (!ref) return error;
@@ -22,6 +23,11 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
       ? "ARTIFACT_BUDGET_EXHAUSTED: Artifact credit used up. Increase its allowed model budget before trying again."
       : "CREDIT_EXHAUSTED: Chat credit used up. Check your chat credit before trying again.";
     retryable = false;
+  } else if (code === "FLEET_BUSY" || code === "FLEET_EMPTY") {
+    category = "capacity";
+    message = code === "FLEET_BUSY"
+      ? `All Macs are busy, retry in ${error.retryAfterSeconds || 15} seconds.`
+      : "No Macs are connected right now. Try again shortly.";
   } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY|Usage is unresolved/.test(code || detail)) {
     category = "credit";
     message = `${code || "USAGE_PENDING"}: ${/REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY/.test(code || "") ? "This message was already sent. " : ""}Chat credit is waiting for NEAR AI's metered usage. Use Reconcile provider usage, then Retry; another request cannot start until it settles.`;
@@ -31,19 +37,24 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     retryable = false;
   } else if (online === false) {
     category = "offline";
-    message = "You are offline. Reconnect to the internet, then Retry.";
+    message = "Your browser is offline. Reconnect to the internet, then Retry.";
   } else if (/\[api\.invalid_input\]|invalid_json/.test(detail)) {
     category = "provider";
     message = `NEAR AI could not read the model request: ${detail} Send again. If it happens again, try another browser.`;
   } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
     category = "provider";
     message = `NEAR AI provider error${interrupted ? " interrupted this reply" : ""}. Wait a moment, then Retry.${code ? " (" + code + ")" : ""}`;
-  } else if (error?.status >= 500 || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(detail)) {
+  } else if (error?.status) {
     category = "broker";
+    message = `Broker returned HTTP ${error.status}${code ? " (" + code + ")" : ""}: ${detail} Retry.`;
+  } else if (code === "GUEST_DISCONNECTED" || /guest.*(?:closed|disconnect)|transport.*closed/i.test(detail)) {
+    category = "guest";
+    message = "Mac guest disconnected. The command may have run; check the workspace before running it again.";
+  } else if (networkFailure(error) || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(detail)) {
+    category = "browser";
     message = interrupted
-      ? "Connection lost mid-reply — the server may have restarted. Retry"
-      : "Cannot reach the broker; it may be restarting. Wait a moment, then Retry.";
-    if (error?.status) message += ` (Broker HTTP ${error.status}${code ? ", " + code : ""})`;
+      ? "Connection lost mid-reply: your browser lost its connection, the tab was in the background, or the server restarted. The partial reply is kept. Retry"
+      : "Your browser lost its connection, or the tab was in the background. Return to the tab, check your connection, then Retry.";
   } else {
     category = "request";
     message = `Model request refused: ${detail} Send again. If it happens again, try another browser.`;

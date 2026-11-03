@@ -138,3 +138,54 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
     await new Promise(done => listener.close(done)); await remote.stop();
   }
 });
+
+
+test("a failed broker status read cannot hide a completed command or run it twice", async () => {
+  let commands = 0;
+  const changes = [];
+  const session = new GuestSession({ catalog: [{ name: "bash", description: "bash", inputSchema: {} }], changed: change => changes.push(change) });
+  session.node = { policy: {} }; session.environment = { commandTimeoutSeconds: 120 };
+  session.ensure = async () => ({ callTool: async () => { commands++; return { content: [{ type: "text", text: "completed command" }] }; } });
+  session.status = async () => { throw new TypeError("Failed to fetch"); };
+  const result = await session.tools()[0].execute("call", { command: "echo completed" });
+  assert.equal(commands, 1);
+  assert.equal(result.content[0].text, "completed command");
+  assert.match(changes[0].error, /browser lost its connection/);
+});
+
+test("a failed guest connection invalidates its chain directory before the next attempt", async () => {
+  let invalidated = 0;
+  const session = new GuestSession({});
+  const error = Error("guest disconnected");
+  session.connectGuest = async () => { throw error; };
+  await assert.rejects(session.connect({ invalidateDirectory: () => invalidated++ }), value => value === error);
+  assert.equal(invalidated, 1);
+});
+
+
+test("a browser failure before Bash starts names the browser connection instead of returning bare Failed to fetch", async () => {
+  const session = new GuestSession({ catalog: [{ name: "bash", description: "bash", inputSchema: {} }] });
+  session.ensure = async () => { throw new TypeError("Failed to fetch"); };
+  await assert.rejects(session.tools()[0].execute("call", { command: "echo completed" }), /browser lost its connection.*background/);
+});
+
+test("user-key guest tool calls retain PromptGuard preflight and complete assistant response", async () => {
+  const calls = [], assistant = { role: "assistant", provider: "anthropic", content: [
+    { type: "text", text: "Read the requested file." },
+    { type: "toolCall", id: "read-one", name: "read", arguments: { path: "note.txt" } },
+  ] };
+  const session = new GuestSession({ catalog: [{ name: "read", description: "Read", inputSchema: { type: "object" } }] });
+  session.node = { policy: { monitor: { name: "baseline-pg2" } } };
+  session.environment = { commandTimeoutSeconds: 120 };
+  session.record = { agent: { state: { model: { provider: "anthropic" }, messages: [assistant] } } };
+  session.ensure = async () => ({ callTool: async call => { calls.push(call); return { content: [{ type: "text", text: "File contents" }] }; } });
+  session.status = async () => {};
+  const manifest = encoder.encode(JSON.stringify({ docker_compose_file: JSON.stringify({ services: { node: {
+    environment: { DSMACK_MONITOR_POLICY: JSON.stringify({ name: "baseline-pg2" }) },
+  } } }) }));
+  await session.preflight({ messages: [{ role: "user", content: "Inspect my file." }] }, undefined, manifest);
+  for (let i = 0; i < 2; i++) await session.tools()[0].execute("read-" + i, { path: "note.txt" });
+  assert.equal(calls.filter(call => call.name === "dsmack_monitor").length, 3);
+  for (const call of calls.filter(call => call.name === "read"))
+    assert.equal(call._meta["dsmack/monitorResponse"], JSON.stringify(assistant.content));
+});

@@ -40,13 +40,20 @@ deno run --allow-net --allow-read --allow-write --allow-run --allow-env \
 
 Dsmack Agent is one Pi conversation with `bash`, `read`, `write` and `edit`
 running in an attested Mac-hosted Linux guest. Tool calls and results appear
-inline. Model requests and responses remain encrypted between the browser and
-NEAR AI Cloud's model TEE; the broker forwards ciphertext and meters usage.
+inline. NEAR AI Cloud's model TEE is the default: model requests and responses
+remain encrypted between the browser and TEE; the broker forwards ciphertext
+and meters usage. In Advanced → Model provider, choose Anthropic or an
+OpenAI-compatible HTTPS endpoint, enter a model ID and paste your API key.
+The connection check sends a short test request directly from the browser.
+Keys stay in Pi's local browser key store. The provider choice is saved on this
+browser. Selected providers
+receive the conversation directly and bill model tokens to your key; guest
+seconds continue to use chat credit. NEAR TEE restores the default credit path.
 
 If a reply loses its connection, its partial text stays in the conversation marked
-Interrupted. Retry checks the broker ledger, then resends the last user/tool
-context without adding another user message. The page shows the settled model
-charge; the retry is a new metered request.
+Interrupted. Retry resends the last user/tool context without adding another
+user message. NEAR retries check the broker ledger first, and the page shows
+the settled model charge. Retries make a new model request.
 
 Choose Start fresh to generate a browser wallet and a random data key locally.
 The wallet receives $0.250000 credit for model tokens and guest seconds. The first
@@ -106,6 +113,10 @@ latest counter winning each session. The broker signs the head and commits its
 counter and digest to the pinned Base Sepolia SyncHeads contract. Each browser
 checks the contract code, on-chain head, signature and ciphertext CID before
 loading remote sessions. Refresh loads changes made on another device.
+
+Saved chats offers Export chats for the current conversation or all saved sessions
+as JSONL, including messages, tool calls, tool outputs, metadata and feedback.
+Use Feedback below a message or tool result to save a note with that conversation.
 
 Email recovery verifies the gate's Intel TDX quote, OS boot measurements, event
 log and quoted ECDH key in the browser. It checks the webhost app's live Base

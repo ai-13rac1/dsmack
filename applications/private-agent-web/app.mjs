@@ -11,7 +11,9 @@ import { ArtifactState } from "./artifact-state.mjs";
 import { ArtifactModels } from "./artifact-models.mjs";
 import { createSessionPersistence } from "./artifact-persistence.mjs";
 import { sealArtifact, openArtifact, artifactLink, parseArtifactLink, sharedScope, viewerSessionId } from "./artifact-share.mjs";
-import { createChatStorage, saveChat } from "./chat-storage.mjs";
+import { html } from "lit";
+import { installMessageFeedback } from "./chat-feedback.mjs";
+import { createChatStorage, saveChat, exportChats } from "./chat-storage.mjs";
 import { DeviceKeys } from "./keys.mjs";
 import { ChatSync } from "./chat-sync.mjs";
 import { SavedWorkspace } from "./workspaces.mjs";
@@ -24,13 +26,15 @@ import {
   store,
   walletBody,
 } from "./credit.mjs";
+import { loadProvider, saveProvider, directModel, modelBadge, modelPrivacy, providerStream, checkProvider, anthropicModels, defaultAnthropicModel } from "./model-provider.mjs";
 import { brokerStream, PRIVACY } from "./inference.mjs";
 import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
 import { monitorLabel } from "../egress-policy/monitor/registry.mjs";
 import { GuestSession, createGuestPeer } from "./agent-tools.mjs";
-import { discoverChainNodes } from "./chain-directory.mjs";
+import { chainDirectoryCache } from "./chain-directory.mjs";
+import { readWithRetry, pause as waitForRead } from "./network-read.mjs";
 import { fetchDirectAttestation } from "./direct-attestation.mjs";
 import { piToolCatalog, defaultAgentEnvironment, buildAgentPrompt } from "./pi-prompt.mjs";
 const $ = (id) => document.getElementById(id),
@@ -50,6 +54,7 @@ let keys, sync, continuity, cfg, sharedLink, sharedBundle, activeArtifactView,
   currentSession,
   unsubscribeChat,
   lastSave = Promise.resolve(),
+  selectedModel,
   chatBusy = false;
 async function startupStep(name, task) {
   const start = performance.now();
@@ -100,36 +105,41 @@ function details(parent, title, value) {
 async function api(path, body, opts = {}) {
   const ref = typeof body?.nonce === "string" && /^[0-9a-f]{32}$/.test(body.nonce) ? body.nonce.slice(0, 8) : undefined;
   try {
-    const response = await fetch(cfg.broker + path, {
-      method: body === undefined ? "GET" : "POST",
-      headers: body === undefined ? {} : { "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: "error",
-      cache: "no-store",
-      signal: opts.signal,
-    });
-    if (!response.ok) {
-      const raw = await response.text();
-      let e;
-      try {
-        e = JSON.parse(raw).error;
-      } catch {}
-      const code = typeof e === "object" ? e?.code : e;
-      const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
-        ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
-        : code === "starter_sandbox_used"
-        ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
-        : code === "diagnostic_node_not_live"
-        ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
-        : undefined;
-      const message = friendly || (typeof e === "object"
-        ? [e?.code, e?.message].filter(Boolean).join(": ")
-        : e) ||
-        `Broker ${path}: HTTP ${response.status}`;
-      throw Object.assign(new Error(message), { code, status: response.status,
-        retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
-    }
-    return opts.stream ? response : await response.json();
+    const read = async () => {
+      const response = await fetch(cfg.broker + path, {
+        method: body === undefined ? "GET" : "POST",
+        headers: body === undefined ? {} : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "error",
+        cache: "no-store",
+        signal: opts.signal,
+      });
+      if (!response.ok) {
+        const raw = await response.text();
+        let e;
+        try {
+          e = JSON.parse(raw).error;
+        } catch {}
+        const code = typeof e === "object" ? e?.code : e;
+        const friendly = path.startsWith("/sandbox/nodes/") && path.includes("/attestation") && response.status >= 500
+          ? `The broker could not fetch the guest's fresh attestation (HTTP ${response.status}). Directory: broker.`
+          : code === "starter_sandbox_used"
+          ? "Your starter sandbox allowance has already been used by this wallet. Additional starter time is not available for this trial."
+          : code === "diagnostic_node_not_live"
+          ? "The selected sandbox retired before your job was reserved. No repository or task was sent."
+          : undefined;
+        const message = friendly || (typeof e === "object"
+          ? [e?.code, e?.message].filter(Boolean).join(": ")
+          : e) ||
+          `Broker ${path}: HTTP ${response.status}`;
+        throw Object.assign(new Error(message), { code, status: response.status,
+          retryAfterSeconds: typeof e === "object" ? e?.retryAfterSeconds : undefined });
+      }
+      return opts.stream ? response : await response.json();
+    };
+    // Attestation asks the guest to sign a fresh challenge; never resend it.
+    return body === undefined && !path.startsWith("/sandbox/nodes/")
+      ? await readWithRetry(read, opts.signal) : await read();
   } catch (error) {
     throw referenceError(error, ref);
   }
@@ -156,7 +166,7 @@ function renderChatCredit() {
 }
 async function claimChatCredit() {
   require(
-    quote?.configured,
+    selectedModel || quote?.configured,
     "Private inference is not configured on this broker.",
   );
   await credit.checkBroker(api);
@@ -187,10 +197,10 @@ async function refreshServices() {
     "Broker does not offer browser-encrypted NEAR chat.",
   );
   setModel();
-  $("service").textContent = quote.configured
+  $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
     ? "Chat ready · " + PRIVACY
     : "Private inference is not configured.";
-  if (credit.signer && quote.configured) await startupStep("wallet-credit", claimChatCredit);
+  if (credit.signer && (quote.configured || selectedModel)) await startupStep("wallet-credit", claimChatCredit);
   $("pins").textContent = JSON.stringify(
     {
       chainId: 84532,
@@ -238,13 +248,13 @@ async function usage() {
   }
 }
 function renderEvidence(e) {
-  if (e.type !== "guest-run") $("verified").hidden = e.browser?.fullQuoteVerifiedBy !== "browser";
+  if (e.type !== "guest-run") $("verified").hidden = !!selectedModel || e.browser?.fullQuoteVerifiedBy !== "browser";
   $("attestations").replaceChildren();
   details($("attestations"), "Latest verification details", e);
 }
 function setModel() {
   if (!agent) return;
-  agent.state.model = (!quote && currentSession?.model) || {
+  agent.state.model = selectedModel || {
     id: quote?.model || "unavailable",
     name: quote?.model || "NEAR TEE model",
     api: "dsmack-inference",
@@ -256,8 +266,12 @@ function setModel() {
     contextWindow: quote?.contextWindow || 1048576,
     maxTokens: quote?.maxOutputTokens || 512,
   };
-  $("model").textContent = agent.state.model.id === "unavailable"
-    ? "NEAR TEE model · unavailable" : agent.state.model.id;
+  $("model").textContent = modelBadge(agent.state.model);
+  $("model-privacy").textContent = modelPrivacy(agent.state.model);
+  if (quote) $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
+    ? "Chat ready · " + PRIVACY : "Private inference is not configured.";
+  $("verified").hidden = !!selectedModel || !currentSession.dsmack.evidence.some(e =>
+    e.model === agent.state.model.id && e.browser?.fullQuoteVerifiedBy === "browser");
   chat?.requestUpdate();
 }
 async function saveCurrentChat(publish = false) {
@@ -303,6 +317,7 @@ function setChatBusy(busy) {
   if (!busy) $("capacity-status").textContent = "";
   $("new-chat").disabled = busy;
   $("sessions").disabled = busy;
+  $("provider-settings").disabled = busy;
   renderReplyRecovery();
 }
 function renderReplyRecovery() {
@@ -313,7 +328,7 @@ function renderReplyRecovery() {
   if (!reply) return;
   panel.dataset.category = reply.failure.category;
   $("reply-recovery-message").textContent = reply.failure.message;
-  $("reply-recovery-charge").textContent = meteredReply(reply.billing);
+  $("reply-recovery-charge").textContent = reply.provider === "near" ? meteredReply(reply.billing) : "Model tokens are billed by your provider. Guest seconds use chat credit.";
   $("retry-reply").disabled = chatBusy || agent.state.isStreaming;
 }
 async function retryReply() {
@@ -322,10 +337,12 @@ async function retryReply() {
   setChatBusy(true);
   clearError();
   try {
-    $("reply-recovery-charge").textContent = "Checking the broker's metered charge before retrying…";
-    const ledger = await usage();
-    require(!ledger.pendingInferenceId, "USAGE_PENDING: Provider cost is still pending.");
-    if (settleInterruptedReply(reply, ledger)) await saveCurrentChat();
+    if (reply.provider === "near") {
+      $("reply-recovery-charge").textContent = "Checking the broker's metered charge before retrying…";
+      const ledger = await usage();
+      require(!ledger.pendingInferenceId, "USAGE_PENDING: Provider cost is still pending.");
+      if (settleInterruptedReply(reply, ledger)) await saveCurrentChat();
+    }
     await chat.onBeforeSend();
     require(agent === originalAgent && retryCandidate(agent.state.messages) === reply,
       "This conversation changed. Select its latest interrupted reply before retrying.");
@@ -542,6 +559,14 @@ async function useSession(data) {
     artifacts.panel.onArtifactsChange = () => { $("open-artifacts").hidden = !artifacts.panel.artifacts.size; };
     $("open-artifacts").onclick = openArtifacts;
   }
+  const systemPrompt = ({ model = agent.state.model, runtime }) => buildAgentPrompt({
+    config: cfg, pageUrl: window.location.href,
+    runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. " + modelPrivacy(model) + "\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
+    environment: guest.environment || measuredEnvironment(),
+    attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
+    repository: "Initial repository snapshot; use the read tool for current workspace contents.\n" + [...repoFiles].map(([name, text]) => `${name}\n${text.length < 4096 ? text : "Read this file with the read tool."}`).join("\n"),
+  }) + "\n\n" + ARTIFACT_PROMPT;
+  const preflight = (context, signal) => guest.preflight(context, signal, policy.manifest);
   agent = new Agent({
     initialState: {
       systemPrompt: "You are the dsmack private agent. Use your tools to inspect and change the attested workspace.",
@@ -550,8 +575,8 @@ async function useSession(data) {
       tools: [...guest.tools(), ...(artifacts ? [artifacts.tool] : [])],
     },
     toolExecution: "sequential",
-    getApiKey: () => undefined,
-    streamFn: brokerStream({
+    getApiKey: provider => provider === "near" ? undefined : storage.providerKeys.get(provider),
+    streamFn: providerStream({ preflight, systemPrompt, startedAt: currentSession.createdAt, near: brokerStream({
       credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error,
       billingUpdated: async answer => {
         const reply = artifactAgent.state.messages.findLast(message => message.role === "assistant" &&
@@ -563,15 +588,9 @@ async function useSession(data) {
         await lastSave;
         if (currentSession === sessionRecord) { chat.requestUpdate(); renderReplyRecovery(); }
       },
-      preflight: (context, signal) => guest.preflight(context, signal, policy.manifest),
+      preflight, systemPrompt,
       startedAt: currentSession.createdAt,
-      systemPrompt: ({ checked, runtime }) => buildAgentPrompt({
-        runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. Model calls remain encrypted from the browser to the NEAR model TEE.\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
-        environment: guest.environment || measuredEnvironment(),
-        attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
-        repository: "Initial repository snapshot; use the read tool for current workspace contents.\n" + [...repoFiles].map(([name, text]) => `${name}\n${text.length < 4096 ? text : "Read this file with the read tool."}`).join("\n"),
-      }) + "\n\n" + ARTIFACT_PROMPT,
-    }),
+    }) }),
   });
   artifactAgent = agent;
   if (artifacts) {
@@ -647,11 +666,68 @@ async function loadSharedViewer() {
     dsmack: { evidence: [], wallet: credit.address.toLowerCase(), sharedArtifactCid: sharedLink.cid } });
   return true;
 }
+function initProviderSettings() {
+  const dialog = $("provider-dialog"), form = $("provider-form"), provider = $("provider-choice");
+  const showFields = () => {
+    $("provider-fields").hidden = provider.value === "near";
+    $("provider-url-label").hidden = provider.value !== "openai-compatible";
+    $("provider-model").setAttribute("list", provider.value === "anthropic" ? "anthropic-models" : "");
+  };
+  for (const id of anthropicModels) {
+    const option = document.createElement("option"); option.value = id; $("anthropic-models").append(option);
+  }
+  provider.onchange = () => {
+    $("provider-key").value = "";
+    $("provider-model").value = provider.value === "anthropic" ? defaultAnthropicModel : "";
+    $("provider-url").value = "https://api.openai.com/v1";
+    showFields();
+  };
+  action("provider-settings", () => {
+    provider.value = selectedModel?.provider === "anthropic" ? "anthropic" : selectedModel ? "openai-compatible" : "near";
+    $("provider-model").value = selectedModel?.id || defaultAnthropicModel;
+    $("provider-url").value = selectedModel?.baseUrl || "https://api.openai.com/v1";
+    $("provider-key").value = "";
+    $("provider-error").textContent = "";
+    showFields(); dialog.showModal();
+  });
+  $("provider-cancel").onclick = () => dialog.close();
+  dialog.addEventListener("close", () => { $("provider-key").value = ""; });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    $("provider-save").disabled = true;
+    $("provider-cancel").disabled = true;
+    $("provider-error").textContent = "";
+    try {
+      const model = provider.value === "near" ? undefined : directModel(provider.value, $("provider-model").value, $("provider-url").value);
+      const key = $("provider-key").value.trim() || (model && await storage.providerKeys.get(model.provider)) || "";
+      if (model) await checkProvider(model, key);
+      await saveProvider(storage, model, key);
+      selectedModel = model;
+      setModel();
+      await saveCurrentChat();
+      dialog.close();
+    } catch (e) { $("provider-error").textContent = e.message; }
+    finally { $("provider-save").disabled = false; $("provider-cancel").disabled = false; }
+  };
+}
 async function initChat() {
   storage = createChatStorage();
+  selectedModel = await loadProvider(storage);
+  initProviderSettings();
   persistSession = createSessionPersistence({ storage, save: saveChat });
   if (keys.bundle && cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
+  installMessageFeedback(() => ({ session: currentSession, messages: agent.state.messages }));
   chat = new AgentInterface();
+  chat.addEventListener("message-feedback", event => {
+    const record = {
+      id: crypto.randomUUID(), ...event.detail, createdAt: new Date().toISOString(),
+      pageVersion: document.querySelector('meta[name="page-bundle-cid"]').content,
+      ...(guest?.lease ? { guestId: guest.lease.sessionId } : {}),
+    };
+    currentSession.feedback = [...(currentSession.feedback || []), record];
+    for (const control of chat.querySelectorAll("message-feedback")) control.records = currentSession.feedback;
+    saveCurrentChat(true).catch(error);
+  });
   chat.id = "chat";
   // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
   chat.updated = () => {
@@ -678,18 +754,20 @@ async function initChat() {
   retry.addEventListener("click", retryReply);
   recoveryPanel.append(message, charge, retry);
   $("chat-host").before(recoveryPanel);
-  // The broker authenticates the wallet and holds the provider key in its CVM.
+  // NEAR uses wallet credit; direct providers resolve browser-only keys in Agent.
   chat.onApiKeyRequired = async () => true;
   chat.onBeforeSend = async () => {
     clearError();
     await credit.checkBroker(api);
-    require(quote?.configured, "Private inference is not configured on this broker.");
+    if (!selectedModel) require(quote?.configured, "Private inference is not configured on this broker.");
     await ensureWallet();
-    if (credit.chatCredit.pendingInferenceId) await usage();
-    require(!credit.chatCredit.pendingInferenceId,
-      "Usage is unresolved. Reconcile provider usage before sending another message.");
-    require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
-      "CREDIT_EXHAUSTED: Chat credit used up.");
+    if (!selectedModel) {
+      if (credit.chatCredit.pendingInferenceId) await usage();
+      require(!credit.chatCredit.pendingInferenceId,
+        "Usage is unresolved. Reconcile provider usage before sending another message.");
+      require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
+        "CREDIT_EXHAUSTED: Chat credit used up.");
+    }
     if (!await storage.settings.get("chat.persistenceRequested")) {
       await storage.requestPersistence();
       await storage.settings.set("chat.persistenceRequested", true);
@@ -717,14 +795,32 @@ async function initChat() {
   if (!await loadSharedViewer()) await useSession(sameWallet ? saved : null);
   await renderPersistence();
   action("new-chat", () => useSession());
-  action("sessions", () => SessionListDialog.open(
-    (id) => (async () => {
+  action("sessions", async () => {
+    const dialog = new SessionListDialog();
+    dialog.onSelectCallback = id => (async () => {
       const data = await storage.sessions.get(id);
       require(data, "This saved chat has been deleted.");
       await useSession(data);
-    })().catch(error),
-    (id) => { if (id === currentSession.id) useSession().catch(error); },
-  ));
+    })().catch(error);
+    dialog.onDeleteCallback = id => { if (id === currentSession.id) useSession().catch(error); };
+    const content = dialog.renderContent.bind(dialog);
+    const download = async sessionId => {
+      await saveCurrentChat();
+      const jsonl = await exportChats(storage, credit.address, sessionId);
+      const url = URL.createObjectURL(new Blob([jsonl], { type: "application/x-ndjson" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = sessionId ? `chat-${sessionId}.jsonl` : "chats.jsonl";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    dialog.renderContent = () => html`<div class="chat-exports"><span>Export chats</span>
+      <button class="secondary" @click=${() => download(currentSession.id).catch(error)}>Current chat</button>
+      <button class="secondary" @click=${() => download().catch(error)}>All chats</button>
+    </div>${content()}`;
+    dialog.open();
+    await dialog.loadSessions();
+  });
   action("save-storage", async () => {
     await PersistentStorageDialog.request();
     await renderPersistence();
@@ -775,20 +871,42 @@ function directoryFailure(e) {
   return "Broker guest directory unavailable" + (e.status ? ` (HTTP ${e.status})` : "") +
     (e.message && !e.message.startsWith("Broker /nodes") ? `: ${e.message}` : ".");
 }
-async function reverify({ registration: prior, signal }) {
+let chainLookup;
+function directoryLookup() {
+  return chainLookup ||= chainDirectoryCache({ config: cfg, publisherOnline: async signal => {
+    const network = await api("/network", undefined, { signal });
+    return network.macs.some(mac => mac.online && mac.publisher.toLowerCase() === cfg.chainDirectory.publisher.toLowerCase());
+  } });
+}
+async function reverify({ registration: prior, signal, directory, browserPeer }) {
   const peer = prior.relay_peer;
   const challenge = sandbox.hex(crypto.getRandomValues(new Uint8Array(32)));
   performance.mark("dsmack:attestation:start", { detail: { peer } });
-  const registration = await api("/sandbox/nodes/" + encodeURIComponent(peer) + "/attestation?challenge=" + challenge, undefined, { signal });
-  performance.mark("dsmack:attestation:response", { detail: { peer } });
-  require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
-  const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
-  require(registration.payments?.challenge === challenge, "Node challenge mismatch. Stale attestation refused.");
-  require(Number(registration.admit_until) * 1000 >= Date.now() + 30000 &&
-    registration.payments.runExpires * 1000 >= Date.now() + 30000,
-    "Guest is too close to drain to reconnect.");
-  performance.mark("dsmack:attestation:verified", { detail: { peer } });
-  return checked;
+  let chain, direct;
+  if (directory === "chain") {
+    chain = await directoryLookup().read({ signal });
+    const selected = chain.nodes.find(node => node.relay_peer === peer);
+    require(selected, "Chain directory no longer lists this guest.");
+    try { direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal }); }
+    catch (error) { directoryLookup().invalidate(); throw error; }
+  }
+  try {
+    const registration = direct?.registration || await api("/sandbox/nodes/" + encodeURIComponent(peer) + "/attestation?challenge=" + challenge, undefined, { signal });
+    performance.mark("dsmack:attestation:response", { detail: { peer } });
+    require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
+    if (chain) await chain.verifyRegistration(registration, signal);
+    const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
+    require(registration.payments?.challenge === challenge, "Node challenge mismatch. Stale attestation refused.");
+    require(Number(registration.admit_until) * 1000 >= Date.now() + 30000 &&
+      registration.payments.runExpires * 1000 >= Date.now() + 30000,
+      "Guest is too close to drain to reconnect.");
+    performance.mark("dsmack:attestation:verified", { detail: { peer } });
+    if (direct) Object.assign(checked, { chainTunnels: direct.entries, connection: direct.connection, directory: "chain", invalidateDirectory: () => directoryLookup().invalidate() });
+    return checked;
+  } catch (error) {
+    await direct?.connection.close().catch(() => {});
+    throw error;
+  }
 }
 async function discover({ peer: browserPeer, wait = false, deadline = Date.now() + (wait ? 90000 : 0), exclude = new Set(), signal, workspace, claim } = {}) {
   require(policy, "The bundled sandbox policy could not load. Refresh the page before sending a job.");
@@ -798,12 +916,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
   const setupSeconds = 30 + (workspace ? Math.ceil(workspace.size / (512 * 1024)) : 0);
   let lastRefusal, chainDirectory, brokerFailure;
   const mark = (stage, detail) => performance.mark("dsmack:" + stage, { detail });
-  const pause = milliseconds => new Promise((resolve, reject) => {
-    const aborted = () => { clearTimeout(timer); reject(signal.reason); };
-    const timer = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
-    if (signal?.aborted) aborted();
-    else signal?.addEventListener("abort", aborted, { once: true });
-  });
+  const pause = milliseconds => waitForRead(milliseconds, signal);
   discovery: for (;;) {
     signal?.throwIfAborted();
     mark("discovery:start");
@@ -816,22 +929,20 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
       mark("discovery:end", { error: e.code || e.message });
       if (signal?.aborted) throw e;
       if (["FLEET_BUSY", "FLEET_EMPTY"].includes(e.code)) {
-        const retry = Math.max(1, Math.min(60, Number(e.retryAfterSeconds) || 15));
+        const retry = Number(e.retryAfterSeconds) || 15;
         showDirectory("broker");
-        // Older brokers use FLEET_BUSY even with zero live registrations.
-        const live = await api("/nodes?all=1", undefined, { signal });
-        const empty = !live.some(node => node.kind === "compute");
-        const message = empty ? `No Macs are connected right now; retrying in ${retry} s`
-          : `No Mac is free right now; retrying in ${retry} s`;
+        const message = e.code === "FLEET_EMPTY" ? `No Macs are connected right now; retry in ${retry} seconds`
+          : `All Macs are busy, retry in ${retry} seconds`;
         $("capacity-status").textContent = message;
-        if (!wait || Date.now() + retry * 1000 > deadline) throw new Error(empty ? "No Macs are connected right now. Try again shortly." : "No Mac is free right now. Try again shortly.");
+        if (!wait || Date.now() + retry * 1000 > deadline) throw Object.assign(new Error(message), {
+          code: e.code, status: e.status, ref: e.ref, retryAfterSeconds: e.retryAfterSeconds });
         await pause(retry * 1000);
         continue;
       }
       brokerFailure = directoryFailure(e);
       showDirectory("chain", brokerFailure);
       try {
-        chainDirectory = await discoverChainNodes({ config: cfg, signal });
+        chainDirectory = await directoryLookup().read({ signal });
         nodes = chainDirectory.nodes;
       } catch (chainError) {
         showDirectory("chain", brokerFailure, chainError.message);
@@ -877,13 +988,14 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
         if (chainDirectory) {
           require(browserPeer, "Direct guest attestation needs a browser peer connection.");
           mark("attestation:direct", { peer, challenge });
-          direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal });
+          try { direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal }); }
+          catch (error) { directoryLookup().invalidate(); throw error; }
         }
         const registration = direct ? direct.registration : await api("/sandbox/nodes/" + encodeURIComponent(peer) +
           "/attestation?challenge=" + challenge, undefined, { signal });
         mark("attestation:response", { peer });
         require(registration.relay_peer === peer, "Guest attestation identifies a different peer.");
-        if (chainDirectory) await chainDirectory.verifyRegistration(registration);
+        if (chainDirectory) await chainDirectory.verifyRegistration(registration, signal);
         const checked = await sandbox.verifyNode(registration, { ...policy, challenge });
         require(!registration.payments || registration.payments.challenge === challenge,
           "Node challenge mismatch. Stale attestation refused.");
@@ -898,6 +1010,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
           checked.chainTunnels = direct.entries;
           checked.connection = direct.connection;
           checked.directory = "chain";
+          checked.invalidateDirectory = () => directoryLookup().invalidate();
         }
         node = checked;
         $("node-status").textContent = "Node verified · Apple enrollment (" +
@@ -1028,7 +1141,7 @@ async function checkSync() {
       const latest = all.filter(m => remoteIds.has(m.id)).sort((a, b) => b.lastModified.localeCompare(a.lastModified))[0];
       const id = (imported || !agent.state.messages.some(m => m.role === "user")) && latest ? latest.id : currentSession.id;
       const data = await storage.sessions.get(id);
-      if (data && (id !== currentSession.id || JSON.stringify(data.messages) !== JSON.stringify(agent.state.messages))) await useSession(data);
+      if (data && (id !== currentSession.id || JSON.stringify(data.messages) !== JSON.stringify(agent.state.messages) || JSON.stringify(data.feedback) !== JSON.stringify(currentSession.feedback))) await useSession(data);
       if (imported && latest) await store("continuity.imported", false);
     }
     await startupStep("sync-flush", () => checking.flush());
@@ -1071,7 +1184,12 @@ async function main() {
     await store("client", client);
   }
   credit = await startupStep("local-credit", () => new Credit(cfg, client, render).init());
-  continuity = continuityUI({ keys, credit, cfg, api, error, beforeExport: async () => {
+  continuity = continuityUI({ keys, credit, cfg, api, error, beforeSwitch: async () => {
+    require(!agent?.state.isStreaming, "Cancel the current reply before switching wallets.");
+    await saveCurrentChat();
+    if (guest?.lease) await guest.end();
+    if (sync) await sync.flush();
+  }, beforeExport: async () => {
     require(keys.bundle, "Start fresh or recover your wallet first.");
     if (sync) await sync.flush();
   } });

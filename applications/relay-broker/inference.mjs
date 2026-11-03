@@ -226,8 +226,10 @@ export class Inference {
       check(
         !Object.hasOwn(a.nonces, r.nonce) ||
           (repeatable && a.nonces[r.nonce].requestHash === requestHash),
-        "REQUEST_REPLAY",
-        "wallet request nonce already used",
+        action === "usage" ? "REQUEST_ALREADY_SENT" : "REQUEST_REPLAY",
+        action === "usage"
+          ? "This usage check was already sent. Retry to check current credit with a new signed request."
+          : "wallet request nonce already used",
         409,
       );
       const nonces = Object.fromEntries(
