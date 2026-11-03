@@ -572,6 +572,7 @@ async function useSession(data) {
       preflight: (context, signal) => guest.preflight(context, signal, policy.manifest),
       startedAt: currentSession.createdAt,
       systemPrompt: ({ checked, runtime }) => buildAgentPrompt({
+        config: cfg, pageUrl: window.location.href,
         runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. Model calls remain encrypted from the browser to the NEAR model TEE.\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
         environment: guest.environment || measuredEnvironment(),
         attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
