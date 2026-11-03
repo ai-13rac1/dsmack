@@ -11,6 +11,8 @@ import { Payments } from "./payments.mjs";
 import { Inference, InferenceError } from "./inference.mjs";
 import { NearError, NearProvider } from "./near.mjs";
 import { rpcChain } from "../../dstack-compat/secret-release/policy.mjs";
+import { RpcClient } from "../payments/rpc.mjs";
+import { RPCS } from "../payments/schema.mjs";
 import { withEnrollment } from "./attestation.mjs";
 import { Broker, limits, Refused } from "./broker.mjs";
 import { canonical } from "./grants.mjs";
@@ -85,8 +87,9 @@ async function load(ctx: Context) {
   } catch (e) {
     if (!(e instanceof Deno.errors.NotFound)) throw e;
   }
+  const chainRpc = new RpcClient({ rpcs: cfg.rpcs ?? [cfg.rpc, ...RPCS] });
   const chain = withEnrollment(
-    rpcChain(cfg.rpc, cfg.attest, cfg.canary),
+    rpcChain(cfg.rpc, cfg.attest, cfg.canary, (method: string, params: unknown[]) => chainRpc.request(method, params)),
     cfg.enrollments,
   );
   const broker = new Broker({
@@ -111,7 +114,7 @@ async function load(ctx: Context) {
   const workspaces = new Workspaces({ broker, cfg: cfg.workspaces,
     state: workspaceState, save: (v: object) => atomicSave(workspacePath, v) });
   const continuity = new Continuity({
-    cfg: { rpc: cfg.rpc, ...cfg.continuity }, key,
+    cfg: { rpc: cfg.rpc, rpcs: cfg.continuity?.rpc ? undefined : cfg.rpcs, ...cfg.continuity }, key,
     anchorKey: payments?.key ?? await getSigningKey(ctx.env.DSTACK_SOCKET, true),
     state: syncState,
     save: (v: object) => atomicSave(syncPath, v),

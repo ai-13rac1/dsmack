@@ -1,6 +1,6 @@
 // Build local operational configuration from P1's deployment and finalized code reads.
 import { CHAIN, json, keccak256, require, RPCS } from "./schema.mjs";
-import { Quorum } from "./quorum.mjs";
+import { ChainReader } from "./chain-reader.mjs";
 const [deploymentPath, grantSigner, destinationPolicyHash, output] = Deno.args;
 require(
   output,
@@ -21,7 +21,7 @@ const cfg = {
   attest: "0xdd86D0da349104534AbE7155DBc04D33B74C0A53",
   canary: "0xdC66c90291973167126a3c4455D5A6064634f3B1",
 };
-const q = new Quorum(cfg), s = await q.snapshot();
+const q = new ChainReader(cfg), s = await q.snapshot();
 const registryRaw = await s.read("eth_call", [{
   to: cfg.attest,
   data: "0xb4eb10ce",

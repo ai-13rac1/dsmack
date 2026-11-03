@@ -46,7 +46,7 @@ export class Continuity {
     Object.assign(this, { cfg, key, anchorKey, state, save, put, get, now });
     this.pending = Promise.resolve(); this.nonces = new Map();
     if (!chain && cfg.anchor) {
-      this.provider = syncRpcProvider(cfg.rpc);
+      this.provider = syncRpcProvider(cfg.rpcs ?? cfg.rpc);
       this.chain = new Contract(cfg.anchor, headAbi, anchorKey.connect(this.provider));
     } else this.chain = chain;
     this.receipt = receipt ?? (hash => anchorReceipt(this.provider, hash));

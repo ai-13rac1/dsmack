@@ -237,7 +237,7 @@ class PoolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); instance = self.instance(root)
             failure = {'stage': 'broker_registration', 'status': 403,
-                       'body': 'refused: RPC quorum disagreement/unavailable: eth_call', 'error': 'HTTP 403'}
+                       'body': 'refused: RPC unavailable (Base Sepolia): tenderly: RPC HTTP 429', 'error': 'HTTP 403'}
             for attempt, delay in enumerate([60, 120, 240, 480, 900, 900, 900]):
                 node = self.failed_node(root/str(attempt)); instance.active = [node]
                 with patch.object(pool, 'guest_result', return_value={'error': failure}), \

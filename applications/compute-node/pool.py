@@ -174,7 +174,7 @@ def external_broker_error(error):
     message = error.get('error', '') + ' ' + error.get('body', '')
     if not (stage.startswith('broker') or re.search(r'(?:POST |Post ").*/nodes', message)):
         return False
-    return bool(re.search(r'RPC (?:quorum|HTTP|eth_)|finalized RPC quorum|stale/future finalized head|finalized block (?:stale|future)', message, re.I)
+    return bool(re.search(r'RPC (?:unavailable|quorum|HTTP|eth_)|finalized RPC quorum|stale/future finalized head|finalized block (?:stale|future)', message, re.I)
                 or error.get('status') in (408, 429, 502, 503, 504)
                 or (error.get('status') is None and re.search(
                     r'connection refused|connection reset|timeout|timed out|no such host|dial tcp|network is unreachable|EOF', message, re.I)))

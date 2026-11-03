@@ -25,7 +25,7 @@ bash contracts/payments/verify.sh 0xNEW_ESCROW
 ```
 
 The constructor is `(address usdc, address owner)`. Deployment checks the wallet
-identity before network access, pins a finalized Base Sepolia RPC quorum, deploys,
+identity before network access, pins a finalized Base Sepolia block, deploys,
 and checks the compiled runtime plus immutable owner/token. It requires 0.02
 Sepolia ETH plus gas and preserves a 0.02 ETH reserve. Transaction records and
 `deployment.json` go under `PAYMENTS_DIR/contract/`.
@@ -39,6 +39,8 @@ register their new compose/image measurements before the Mac pool offers them.
 Broker and guest deployment commands are in
 [applications/payments](../../applications/payments/README.md#run).
 
-`PAYMENTS_RPC_URLS` can name three comma-separated independent HTTPS RPCs.
+`PAYMENTS_RPC_URLS` selects an ordered, comma-separated list of Base Sepolia RPCs.
+One healthy provider is enough; rate-limited providers back off for 1–60 seconds
+(or longer with `Retry-After`). State reads retain the finalized block hash.
 Defaults are Base, PublicNode and dRPC. Source verification uses the coordinator's
 existing Basescan API key.
