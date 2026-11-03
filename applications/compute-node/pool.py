@@ -298,7 +298,7 @@ class Pool:
         self.hardware = hardware()
         self.config = operator_config(args.operator, self.hardware, getattr(args, 'max_slots', None))
         self.slots = [{'slot_id': i, 'consecutive_failures': 0, 'last_error': None,
-                       'retry_pending': False, 'stopped': False, 'jobs_served': 0}
+                       'retry_pending': False, 'jobs_served': 0}
                       for i in range(self.config['max_guests'])]
         self.errors_file = args.operator.parent/'operator-errors.json'
         try:
@@ -439,13 +439,14 @@ class Pool:
                                last_error=slot['last_error'], **cleanup)
                     if external:
                         self.retry_broker(slot, slot['last_error'])
-                    else:
-                        if slot['consecutive_failures'] >= 3:
-                            slot['stopped'] = True
-                            self.event('failure_limit', slot_id=slot['slot_id'], consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
+                    elif slot['consecutive_failures'] >= 3:
+                        delay = min(1800, 60 * 2**min(slot['consecutive_failures']-3, 5))
+                        slot['retry_at'] = now + delay
+                        self.event('guest_retry', slot_id=slot['slot_id'], retry_seconds=delay,
+                                   consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
                 else:
                     slot['consecutive_failures'] = 0
-                    slot.update(broker_backoff=0, retry_at=0)
+                    slot.update(broker_backoff=0, retry_at=0, last_error=None)
                     self.event('retired', slot_id=slot['slot_id'], run=str(node['path']), last_error=result.get('error'), **cleanup)
                 slot['jobs_served'] += (node['node'] or {}).get('telemetry', {}).get('jobs_served', 0)
                 self.active.remove(node)
@@ -475,7 +476,7 @@ class Pool:
                 # identically measured guests cannot be assigned to the wrong slot.
                 if any(n['node'] is None and not n.get('readiness_failed') for n in self.active):
                     break
-                if (not slot['stopped'] and now >= slot.get('retry_at', 0) and len(active) < 2 and not any(n['node'] is None for n in active)
+                if (now >= slot.get('retry_at', 0) and len(active) < 2 and not any(n['node'] is None for n in active)
                         and (slot['retry_pending'] or should_replace(active, now, self.args.replace_after))):
                     try:
                         if self.args.pool_root:
@@ -500,7 +501,7 @@ class Pool:
             active = [n for n in self.active if n['slot_id'] == slot['slot_id']]
             for node in active or [None]:
                 registered = node['node'] if node else None
-                state = 'failed' if slot['stopped'] else 'launching'
+                state = 'failed' if now < slot.get('retry_at', 0) else 'launching'
                 if node:
                     if node.get('readiness_failed'):
                         state = 'failed'
@@ -509,6 +510,8 @@ class Pool:
                                  else 'busy' if registered.get('telemetry', {}).get('busy') else 'ready')
                     elif (node['path']/'out/console-v3.log').exists():
                         state = 'attesting'
+                error = slot['last_error']
+                code = (error.get('code') or ('HTTP_'+str(error['status']) if error.get('status') else error['stage'])) if error else None
                 slots.append({'slot_id': slot['slot_id'], 'state': state,
                               'relay_peer': registered['relay_peer'] if registered else None,
                               'run_id': (registered.get('payments', {}).get('runId') or registered.get('attestation', {}).get('run')) if registered else None,
@@ -516,6 +519,7 @@ class Pool:
                               'started_at': node['started_at'] if node else None,
                               'jobs_served': slot['jobs_served'] + sum((n['node'] or {}).get('telemetry', {}).get('jobs_served', 0) for n in active),
                               'last_error': json.dumps(slot['last_error'], ensure_ascii=False) if slot['last_error'] else None,
+                              'last_error_code': str(code) if code is not None else None,
                               'attestation': registered})
         return {'classes': [self.payments['node']], 'config': self.config, 'hardware': self.hardware, 'slots': slots, 'errors': self.errors}
 
@@ -535,7 +539,7 @@ class Pool:
                     if name == 'heartbeat_error':
                         self.remember_error({'at': int(time.time()), 'slot_id': None, 'stage': 'heartbeat', **record})
                     self.event(name, **record)
-            if not self.active and (self.stopping or all(s['stopped'] for s in self.slots) or (self.args.cycles and self.launched >= self.args.cycles)):
+            if not self.active and (self.stopping or (self.args.cycles and self.launched >= self.args.cycles)):
                 if self.boot_lock:
                     self.boot_lock.close()
                 break

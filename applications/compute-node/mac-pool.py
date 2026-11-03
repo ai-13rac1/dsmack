@@ -13,9 +13,9 @@ from heartbeat import Publisher
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def republish(publish,hint,chain):
+def republish(publish,entries,chain):
     try:
-        publish([hint],chain)
+        publish(entries,chain)
         return True
     except (subprocess.CalledProcessError,subprocess.TimeoutExpired) as error:
         print(json.dumps(dict(event='periodic-publication-failed',error=type(error).__name__,
@@ -185,6 +185,37 @@ def reap_orphan_transports(path, grace_seconds=10):
     return reaped
 
 
+class RestartBackoff:
+    """Count unfinished starts across launchd's fresh state directories."""
+    def __init__(self, path):
+        self.path = path
+        self.healthy_since = None
+
+    def begin(self, stopped):
+        record = json.loads(self.path.read_text()) if self.path.exists() else dict(failures=0, retry_at=0)
+        delay = max(0, record['retry_at']-time.time())
+        if delay:
+            print(json.dumps(dict(event='launcher_retry', failures=record['failures'], retrySeconds=delay)), flush=True)
+        while not stopped() and time.time() < record['retry_at']:
+            time.sleep(min(1, max(0, record['retry_at']-time.time())))
+        if stopped():return False
+        failures = record['failures']+1
+        delay = min(1800, 60 * 2**min(failures-1, 5))
+        temporary = self.path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(dict(failures=failures, retry_at=time.time()+delay)))
+        temporary.replace(self.path)
+        return True
+
+    def tick(self, snapshot):
+        if not any(slot['state'] in ('ready', 'busy') for slot in snapshot.get('slots', [])):
+            self.healthy_since = None
+        elif self.healthy_since is None:
+            self.healthy_since = time.monotonic()
+        elif time.monotonic()-self.healthy_since >= 600 and self.path.exists():
+            self.path.unlink()
+            print(json.dumps(dict(event='launcher_backoff_reset')), flush=True)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('runner','workload','state','relay','relay-key','cloudflared','publisher-key'):
@@ -280,7 +311,7 @@ def main():
         (out/'entries.json').write_text(json.dumps(entries))
         return out
     def run_publication(out,chain):
-        cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out]
+        cmd=[sys.executable,ROOT/'applications/browser-p2p/publish.py','chain' if chain else 'broker','--key',a.publisher_key,'--publisher-address',a.publisher_address,'--registry',a.registry,'--broker',a.index,'--entries',out/'entries.json','--evidence',out,'--expiry-state',a.state.parent/'publication-expiry']
         if chain:
             for url in a.publication_rpc or ['https://base-sepolia-rpc.publicnode.com', 'https://base-sepolia.gateway.tenderly.co', 'https://sepolia.base.org']:
                 cmd+=['--rpc',url]
@@ -288,7 +319,9 @@ def main():
     def publish(entries,chain):
         if chain:publish_chain(entries,pending_path,prepare,lambda out:run_publication(out,True))
         else:run_publication(prepare(entries),False)
+    backoff=RestartBackoff(a.state.parent/'launcher-backoff.json')
     try:
+        if not a.adopt_launcher and not backoff.begin(lambda:stopping):return
         if a.adopt_launcher:
             handoff=LegacyHandoff(a.adopt_launcher,a.state)
             transports.extend(handoff.transports)
@@ -310,9 +343,9 @@ def main():
             tunnel_address=public_ready(host)
             broker_host=urlsplit(a.broker).hostname;broker_address=resolve(broker_host)
             start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port',str(proxy_port),'--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
-            hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3600)
+            hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3300)
             (a.state/'locator.json').write_text(json.dumps(hint,indent=2))
-            published=True;republish(publish,hint,False);last_http=time.monotonic()
+            published=True;republish(publish,[hint],False);last_http=time.monotonic()
             last_chain_attempt=0;published_entries=[]
             if stopping:return
         publisher=Publisher(a.publisher_key,a.publisher_address,a.broker,a.pool_version,a.operator)
@@ -338,14 +371,15 @@ def main():
                 except (OSError,ValueError,KeyError,TypeError) as error:
                     print(json.dumps(dict(event='restart_rejected',error=str(error))),flush=True)
             snapshot=pools.tick() or {}
+            backoff.tick(snapshot)
             now=time.monotonic()
             entries=guest_entries(snapshot,hint)
             if (entries!=published_entries or pending_path.exists()) and now-last_chain_attempt>=60:
                 last_chain_attempt=now
                 published_entries=publish_directory(publish,entries,published_entries,pending_path.exists())
             if now-last_http>=60:
-                hint['expiresAt']=int(time.time())+3600
-                republish(publish,hint,False);last_http=time.monotonic()
+                hint['expiresAt']=int(time.time())+3300
+                republish(publish,[hint],False);last_http=time.monotonic()
             time.sleep(2)
     finally:
         if a.adopt_launcher and (handoff is None or not handoff.committed):
@@ -357,13 +391,11 @@ def main():
             finish(pools, published, published_entries, pending_path, publish, transports, logs, children, a.state)
 
 def finish(pools, published, published_entries, pending_path, publish, transports, logs, children, state):
-    if pools:
-        try:pools.stop()
-        except subprocess.TimeoutExpired:raise RuntimeError('warm guests still active; owned transport retained')
     try:
+        if pools:pools.stop()
         if published:
             publish_directory(publish,[],published_entries,pending_path.exists())
-            publish([],False)
+            republish(publish,[],False)
     finally:
         groups=stop_transports(transports)
         for log in logs:log.close()
