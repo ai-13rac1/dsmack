@@ -415,9 +415,12 @@ class Pool:
                 normal_timeout = (outputs.get('status') == 'cancelled'
                                   and (outputs.get('cancel') or {}).get('reason') == 'timeout'
                                   and (not result.get('error') or result['error'].get('terminal') is False))
+                # A guest that served no session never writes agent-receipts; that is its normal idle end.
+                idle_end = (outputs.get('status') == 'failed' and outputs.get('exit_code') == 0
+                            and outputs.get('missing_artifacts') == ['agent-receipts'])
                 closed = guest_closed(node['path'])
                 failed = (proc.returncode != 0 or node['node'] is None or node.get('readiness_failed')
-                          or not closed or not (outputs.get('status') == 'completed' or normal_timeout))
+                          or not closed or not (outputs.get('status') == 'completed' or normal_timeout or idle_end))
                 cleanup = preserve_and_retire(node['path'], self.args.repo)
                 if failed:
                     slot['retry_pending'] = True

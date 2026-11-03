@@ -188,6 +188,18 @@ class PoolTests(unittest.TestCase):
             self.assertEqual(instance.slots[0]['consecutive_failures'], 1)
             self.assertFalse(instance.stopping); instance.launch.assert_called_once()
 
+    def test_idle_guest_end_without_agent_receipts_is_not_a_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); instance = self.instance(root)
+            node = self.failed_node(root/'idle'); node['node'] = {'relay_peer': 'was-ready'}
+            instance.active = [node]
+            result = {'outputs': {'status': 'failed', 'exit_code': 0, 'missing_artifacts': ['agent-receipts']}}
+            with patch.object(pool, 'guest_result', return_value=result), patch.object(pool, 'guest_closed', return_value=True), \
+                    patch.object(pool, 'preserve_and_retire', return_value={}):
+                instance.tick()
+            self.assertEqual(instance.slots[0]['consecutive_failures'], 0)
+            self.assertFalse(instance.slots[0]['stopped'])
+
     def test_three_consecutive_failures_stop_only_that_slot(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); instance = self.instance(root)
