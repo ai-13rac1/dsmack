@@ -53,7 +53,7 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   } else if (networkFailure(error) || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(detail)) {
     category = "browser";
     message = interrupted
-      ? "Connection lost mid-reply; the partial reply is kept. Retry"
+      ? "Connection lost mid-reply: your browser lost its connection, the tab was in the background, or the server restarted. The partial reply is kept. Retry"
       : "Your browser lost its connection, or the tab was in the background. Return to the tab, check your connection, then Retry.";
   } else {
     category = "request";
