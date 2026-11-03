@@ -209,7 +209,7 @@ test('transport abort after dispatch settles the persisted artifact cost',async(
   const f=await fixture();await f.models.grant(scope,'20000000');
   const api=async(...args)=>{const result=await f.api(...args);if(args[0]==='/inference/chat')throw new DOMException('transport aborted','AbortError');return result;};
   const interrupted=new ArtifactModels({...f.options,api});
-  await assert.rejects(interrupted.complete(scope,{messages:[{role:'user',content:'hello'}]}),/Cannot reach the broker/);
+  await assert.rejects(interrupted.complete(scope,{messages:[{role:'user',content:'hello'}]}),/browser lost its connection/);
   const b=(await f.makeState().read(scope)).budget;
   assert.equal(b.spentNanoUsd,'300000');assert.equal(b.reservedNanoUsd,'0');assert(!b.pending);
 });

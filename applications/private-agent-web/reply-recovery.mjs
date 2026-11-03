@@ -52,7 +52,9 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     message = "Mac guest disconnected. The command may have run; check the workspace before running it again.";
   } else if (networkFailure(error) || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(detail)) {
     category = "browser";
-    message = "Your browser lost its connection, or the tab was in the background. Return to the tab, check your connection, then Retry.";
+    message = interrupted
+      ? "Connection lost mid-reply; the partial reply is kept. Retry"
+      : "Your browser lost its connection, or the tab was in the background. Return to the tab, check your connection, then Retry.";
   } else {
     category = "request";
     message = `Model request refused: ${detail} Send again. If it happens again, try another browser.`;
