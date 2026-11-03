@@ -193,7 +193,7 @@ class PoolTests(unittest.TestCase):
             root = Path(tmp); instance = self.instance(root)
             node = self.failed_node(root/'idle'); node['node'] = {'relay_peer': 'was-ready'}
             instance.active = [node]
-            result = {'outputs': {'status': 'failed', 'exit_code': 0, 'missing_artifacts': ['agent-receipts']}}
+            result = {'outputs': {'status': 'failed', 'exit_code': 0, 'missing': ['agent-receipts']}}
             with patch.object(pool, 'guest_result', return_value=result), patch.object(pool, 'guest_closed', return_value=True), \
                     patch.object(pool, 'preserve_and_retire', return_value={}):
                 instance.tick()

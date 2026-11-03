@@ -58,10 +58,21 @@ class OrphanTransportTests(unittest.TestCase):
         reaped, killed, kept = self.reap(record, {11: 'mac-relay /key', 12: 'some other program'})
         self.assertEqual(reaped, [11]); self.assertEqual(killed, [(11, signal.SIGTERM)]); self.assertFalse(kept)
 
-    def test_live_owner_transports_are_left_alone(self):
+    def test_live_owner_refuses_start(self):
         record = dict(owner=10, ownerCommand='python mac-pool.py', groups=[dict(pid=11, command='mac-relay /key')])
-        reaped, killed, kept = self.reap(record, {10: 'python mac-pool.py', 11: 'mac-relay /key'})
-        self.assertEqual((reaped, killed, kept), ([], [], True))
+        with self.assertRaises(RuntimeError):
+            self.reap(record, {10: 'python mac-pool.py', 11: 'mac-relay /key'})
+
+    def test_group_of_dead_leader_is_reaped(self):
+        record = dict(owner=10, ownerCommand='python mac-pool.py', groups=[dict(pid=11, command='cloudflared tunnel')])
+        with mock.patch.object(mac_pool, 'transport_group_running', side_effect=__import__('itertools').chain([True], __import__('itertools').repeat(False))):
+            killed = []
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp)/'transports.json'; path.write_text(json.dumps(record))
+                with mock.patch.object(mac_pool, 'process_command', return_value=None), \
+                        mock.patch.object(mac_pool.os, 'killpg', side_effect=lambda pid, sig: killed.append(pid)):
+                    reaped = mac_pool.reap_orphan_transports(path, grace_seconds=0)
+        self.assertEqual((reaped, killed), ([11], [11]))
 
 
 class GuestDirectoryTests(unittest.TestCase):

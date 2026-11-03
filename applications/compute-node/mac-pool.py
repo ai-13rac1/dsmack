@@ -163,11 +163,13 @@ def reap_orphan_transports(path, grace_seconds=10):
     if not path.exists():
         return []
     record = json.loads(path.read_text())
-    if record['ownerCommand'] and process_command(record['owner']) == record['ownerCommand']:
-        return []
+    if record['owner'] != os.getpid() and record['ownerCommand'] and process_command(record['owner']) == record['ownerCommand']:
+        raise RuntimeError('pool %d still owns the transports recorded in %s' % (record['owner'], path))
     reaped = []
     for group in record['groups']:
-        if group['command'] and process_command(group['pid']) == group['command']:
+        leader = process_command(group['pid'])
+        # A dead leader's pgid can only still be held by its own descendants.
+        if (group['command'] and leader == group['command']) or (leader is None and transport_group_running(group['pid'])):
             try:
                 os.killpg(group['pid'], signal.SIGTERM); reaped.append(group['pid'])
             except ProcessLookupError:
@@ -325,6 +327,7 @@ def main():
                     raise RuntimeError('legacy transfer failed; inspect new pool log')
                 time.sleep(.1)
             handoff.commit()
+            record_transports(transport_record,os.getpid(),transports)
         (a.state/'launcher.pid').write_text(str(os.getpid()))
         while not stopping:
             for proc in transports:
@@ -366,6 +369,7 @@ def finish(pools, published, published_entries, pending_path, publish, transport
             publish([],False)
     finally:
         groups=stop_transports(transports)
+        (state.parent/'transports.json').unlink(missing_ok=True)
         for log in logs:log.close()
         (state/'stopped.json').write_text(json.dumps(dict(stoppedAt=int(time.time()),
             ownedChildrenStopped=all(c.poll() is not None for c in children),

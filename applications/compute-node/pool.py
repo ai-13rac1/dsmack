@@ -417,7 +417,7 @@ class Pool:
                                   and (not result.get('error') or result['error'].get('terminal') is False))
                 # A guest that served no session never writes agent-receipts; that is its normal idle end.
                 idle_end = (outputs.get('status') == 'failed' and outputs.get('exit_code') == 0
-                            and outputs.get('missing_artifacts') == ['agent-receipts'])
+                            and outputs.get('missing') == ['agent-receipts'])
                 closed = guest_closed(node['path'])
                 failed = (proc.returncode != 0 or node['node'] is None or node.get('readiness_failed')
                           or not closed or not (outputs.get('status') == 'completed' or normal_timeout or idle_end))
