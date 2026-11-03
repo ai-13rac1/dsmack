@@ -105,8 +105,9 @@ function derToRaw(d) {
 }
 
 // Reads through eth_call. attest is an AppleAttestRegistryV1 (keys, cds, validationCategory); canary a Canary.
-export function rpcChain(rpc, attest, canary) {
+export function rpcChain(rpc, attest, canary, read) {
   const call = async (to, data) => {
+    if (read) return unhex((await read("eth_call", [{ to, data }, "latest"])).slice(2));
     const r = await (await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, redirect: "error",
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data }, "latest"] }) })).json();
     if (r.error) throw new Error("eth_call: " + JSON.stringify(r.error));

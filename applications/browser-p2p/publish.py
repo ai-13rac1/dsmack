@@ -12,7 +12,7 @@ from eth_account.messages import encode_defunct
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'contracts/payments'))
 from deploy import load_owner,send,wait_receipt
-from rpc import Quorum,CHAIN_ID,call
+from rpc import ChainReader,CHAIN_ID
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('action',choices=['deploy','publish','chain','broker'])
 p.add_argument('--key',type=Path)
@@ -74,33 +74,7 @@ if not a.key:raise ValueError('--key required for Base Sepolia writes')
 account=publisher()
 if a.rpc and (a.action not in ('publish','chain') or not a.publisher_address or not all(url.startswith('https://') for url in a.rpc)):
  raise ValueError('--rpc requires a Mac-local locator publication and an HTTPS RPC')
-class PublicationRPC(Quorum):
- def __init__(self):
-  if a.rpc:
-   self.urls=tuple(a.rpc)
-   from publication_rpc import OrderedRPC
-   self.request=OrderedRPC(self.urls,call)
-  else:super().__init__()
- def finalized(self):
-  if not a.rpc:return super().finalized()
-  if self.read('eth_chainId',[])!=hex(CHAIN_ID):raise ValueError('publisher RPC is not Base Sepolia')
-  header=self.read('eth_getBlockByNumber',['finalized',False])
-  return {k:header[k] for k in ('number','hash','timestamp')}
- def read(self,method,params):
-  if a.rpc:return self.request(self.urls[0],method,params)
-  if method!='eth_gasPrice':return super().read(method,params)
-  # Fee suggestions are volatile estimates, not consensus state. Use the largest
-  # successful public quote; send() still enforces its fee/reserve caps.
-  quotes={};values=[]
-  for url in self.urls:
-   try:
-    value=call(url,method,params);values.append(int(value,16));quotes[url]=value
-   except Exception as error:quotes[url]={'error':str(error)}
-  (a.evidence/'fee-quotes.json').write_text(json.dumps(quotes,indent=2)+'\n')
-  if not values:raise RuntimeError('all fee quote requests failed; see fee-quotes.json')
-  print('Fee suggestions recorded; using maximum '+str(max(values))+' wei',flush=True)
-  return hex(max(values))
-quorum=PublicationRPC()
+quorum=ChainReader(tuple(a.rpc)) if a.rpc else ChainReader()
 if CHAIN_ID!=84532:raise ValueError('Base Sepolia required')
 if a.action=='deploy':
  if not a.bytecode:raise ValueError('--bytecode required')
@@ -128,6 +102,6 @@ else:
   envelope=signed_publication(values,account);raw=json.dumps(envelope,separators=(',',':'))
   (a.evidence/'signed-publication.json').write_text(json.dumps(envelope,indent=2)+'\n')
   data='0x'+(keccak(text='publish(string)')[:4]+encode(['string'],[raw])).hex()
-  receipt=send(account,quorum,a.evidence,'publish',to=a.registry,data=data,**({'rpc_call':quorum.request} if a.rpc else {}),**({'min_reserve_wei':100_000_000_000_000,'balance_block':'latest'} if a.publisher_address else {}))
+  receipt=send(account,quorum,a.evidence,'publish',to=a.registry,data=data,**({'min_reserve_wei':100_000_000_000_000,'balance_block':'latest'} if a.publisher_address else {}))
  if a.action=='publish':publish_broker()
  print(json.dumps({'chainId':CHAIN_ID,'registry':a.registry,'transactionHash':receipt['transactionHash'],'broker':a.broker}))

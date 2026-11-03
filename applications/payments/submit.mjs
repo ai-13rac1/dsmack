@@ -12,7 +12,7 @@ import {
   Wallet,
 } from "./schema.mjs";
 
-// Use Deno's TLS transport consistently for quorum reads and signed submissions.
+// Use Deno's TLS transport consistently for chain reads and signed submissions.
 export function providerFor(cfg) {
   const connection = new FetchRequest(cfg.rpcs[0]);
   connection.allowGzip = false;
@@ -68,8 +68,8 @@ export async function sender(cfg, keyPath, funding = true) {
     "single configured funding wallet required",
   );
   if (funding) {
-    const { Quorum } = await import("./quorum.mjs");
-    const s = await new Quorum(cfg).snapshot();
+    const { ChainReader } = await import("./chain-reader.mjs");
+    const s = await new ChainReader(cfg).snapshot();
     require(
       BigInt(await s.read("eth_getBalance", [wallet.address, s.tag])) >=
         20000000000000000n,
@@ -83,8 +83,8 @@ if (import.meta.main) {
   require(flag === "--send" || value === "--send",
     "usage: submit.mjs CONFIG WALLET_KEY deposit USDC_BASE_UNITS --send | claim CLAIM_JSON --send | request-exit --send | withdraw --send");
   const cfg = JSON.parse(await Deno.readTextFile(config));
-  const { Quorum } = await import("./quorum.mjs");
-  await new Quorum(cfg).snapshot();
+  const { ChainReader } = await import("./chain-reader.mjs");
+  await new ChainReader(cfg).snapshot();
   const { contract, wallet } = await sender(cfg, keyPath, false);
   let tx;
   if (command === "deposit") {

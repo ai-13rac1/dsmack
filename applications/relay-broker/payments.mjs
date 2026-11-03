@@ -6,7 +6,7 @@ import {
   require,
   runNode,
 } from "../payments/schema.mjs";
-import { Quorum } from "../payments/quorum.mjs";
+import { ChainReader } from "../payments/chain-reader.mjs";
 import { admissionChain } from "../payments/admission.mjs";
 import { verifyRelay, withEnrollment } from "./attestation.mjs";
 import { hex } from "../../dstack-compat/secret-release/policy.mjs";
@@ -27,7 +27,7 @@ export class Payments {
     this.state = state;
     this.save = save;
     this.now = now;
-    this.chain = quorum ?? new Quorum(cfg);
+    this.chain = quorum ?? new ChainReader(cfg);
     this.pending = Promise.resolve();
     this.challenges = new Map();
   }

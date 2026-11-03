@@ -9,7 +9,7 @@ import {
   TypedDataEncoder,
   Wallet,
 } from "./schema.mjs";
-import { Quorum } from "./quorum.mjs";
+import { ChainReader } from "./chain-reader.mjs";
 import { linkedOperator } from "./mac-operator.mjs";
 import { ownershipDomain, ownershipTypes } from "../relay-broker/ownership.mjs";
 
@@ -59,65 +59,64 @@ function rpc(overrides = {}, rpcs = cfg.rpcs) {
     if (overrides[method]) result = overrides[method](url, params, result);
     return Response.json({ jsonrpc: "2.0", id: 1, result });
   };
-  return { q: new Quorum({ ...cfg, rpcs, now: () => now, fetcher }), calls, block };
+  return { q: new ChainReader({ ...cfg, rpcs, now: () => now, fetcher }), calls, block };
 }
-test("quorum requires a strict majority of configured hosts, including failed hosts", async () => {
-  for (const count of [4, 5]) {
-    const rpcs = Array.from({ length: count }, (_, i) => `https://p${i}.example`);
-    const votes = agree => rpc({ eth_getCode: url => rpcs.indexOf(url) < agree ? code : "0x6001" }, rpcs).q.snapshot();
-    await votes(3);
-    await assert.rejects(votes(2), /quorum disagreement|code mismatch/);
-    await assert.rejects(rpc({ eth_getCode: url => {
-      if (rpcs.indexOf(url) >= 2) throw Error("offline");
-      return code;
-    } }, rpcs).q.snapshot(), /quorum disagreement/);
+test("one healthy provider supplies a hash-pinned finalized snapshot", async () => {
+  const { q, calls, block } = rpc({ eth_chainId: url => {
+    if (!url.includes("c.invalid")) throw Error("offline");
+    return "0x14a34";
+  } });
+  const s = await q.snapshot();
+  assert.equal(await s.call("deposits", [escrow]), 123n);
+  for (const c of calls.filter(c => ["eth_getCode", "eth_call"].includes(c.method))) {
+    assert.deepEqual(c.params[1], { blockHash: block.hash, requireCanonical: true });
   }
 });
-test("quorum freezes calls to a common finalized hash and tolerates one wrong provider", async () => {
-  const { q, calls, block } = rpc({
-    eth_getBlockByNumber: (url, _, value) => ({
-      ...value,
-      providerMetadata: url,
-    }),
-    eth_call: (url, _, value) =>
-      url.includes("c.invalid")
-        ? abi.encodeFunctionResult("deposits", [900])
-        : value,
+
+test("stale or wrong-chain providers cannot supply state, and changed code stops credit", async () => {
+  await assert.rejects(rpc({ eth_getBlockByNumber: (_, __, v) => ({ ...v, timestamp: "0x1" }) }).q.snapshot(), /stale/);
+  await assert.rejects(rpc({ eth_chainId: () => "0x2105" }).q.snapshot(), /Base Sepolia/);
+  await assert.rejects(rpc({ eth_getCode: () => "0x6001" }).q.snapshot(), /code mismatch/);
+  const { q } = rpc({ eth_getBlockByNumber: (url, _, v) => url.includes("a.invalid") ? { ...v, timestamp: "0x1" } : v });
+  assert.equal((await q.snapshot()).block.number, "0x20");
+});
+
+test("state failover rejects a different hash or height at the pinned block", async () => {
+  for (const changed of [{ hash: "0x" + "bb".repeat(32) }, { number: "0x21" }]) {
+    const { q } = rpc({
+      eth_call: () => { throw Error("offline"); },
+      eth_getBlockByNumber: (url, _, v) => url.includes("a.invalid") ? v : { ...v, ...changed },
+    });
+    const s = await q.snapshot();
+    await assert.rejects(s.call("deposits", [escrow]), /snapshot block changed/);
+  }
+});
+
+test("a lagging provider can serve the pinned block during state failover", async () => {
+  const { q } = rpc({
+    eth_getBlockByNumber: (url, params, v) => url.includes("b.invalid") && params[0] === "finalized" ? { ...v, number: "0x10" } : v,
+    eth_call: (url, _, v) => { if (url.includes("a.invalid")) throw Error("offline"); return v; },
   });
   const s = await q.snapshot();
   assert.equal(await s.call("deposits", [escrow]), 123n);
-  for (
-    const c of calls.filter((c) =>
-      ["eth_getCode", "eth_call"].includes(c.method)
-    )
-  ) {
-    assert.deepEqual(c.params[1], {
-      blockHash: block.hash,
-      requireCanonical: true,
-    });
-  }
 });
-test("stale, wrong chain, changed code and split state cannot mint credit", async () => {
-  await assert.rejects(
-    rpc({ eth_getBlockByNumber: (_, __, v) => ({ ...v, timestamp: "0x1" }) }).q
-      .snapshot(),
-    /stale/,
-  );
-  await assert.rejects(
-    rpc({ eth_chainId: () => "0x1" }).q.snapshot(),
-    /quorum unavailable/,
-  );
-  await assert.rejects(
-    rpc({ eth_getCode: () => "0x6001" }).q.snapshot(),
-    /code mismatch/,
-  );
-  const s = await rpc({
-    eth_call: (url) =>
-      abi.encodeFunctionResult("deposits", [
-        url.includes("a.invalid") ? 1 : url.includes("b.invalid") ? 2 : 3,
-      ]),
-  }).q.snapshot();
-  await assert.rejects(s.call("deposits", [escrow]), /quorum disagreement/);
+
+test("quota failure during a snapshot moves state reads to one matching provider", async () => {
+  const { q } = rpc(), fetcher = q.rpc.fetcher;
+  let limited = 0;
+  q.rpc.fetcher = (url, opts) => {
+    const { method } = JSON.parse(opts.body);
+    if (url.includes("a.invalid") && method === "eth_call") {
+      limited++;
+      return new Response("quota", { status: 429 });
+    }
+    if (url.includes("c.invalid")) throw Error("offline");
+    return fetcher(url, opts);
+  };
+  const s = await q.snapshot();
+  assert.equal(await s.call("deposits", [escrow]), 123n);
+  assert.equal(await s.call("deposits", [escrow]), 123n);
+  assert.equal(limited, 1);
 });
 const evidence = Deno.env.get("PAYMENTS_EVIDENCE");
 if (evidence) {
@@ -145,42 +144,3 @@ if (evidence) {
     );
   });
 }
-
-test("a provider with a lagging finalized tag can corroborate state at the quorum-pinned hash", async () => {
-  const { q } = rpc({
-    eth_getBlockByNumber: (url, params, value) =>
-      url.includes("c.invalid") && params[0] === "finalized"
-        ? { ...value, number: "0x10" }
-        : value,
-    eth_getCode: (url, _, value) => {
-      if (url.includes("b.invalid")) throw Error("data backend unavailable");
-      return value;
-    },
-  });
-  assert.equal((await q.snapshot()).block.number, "0x20");
-});
-
-test("two matching state replies complete without waiting for a stalled third provider", async () => {
-  let cancelled = false;
-  const base = rpc();
-  const fetcher = async (url, opts) => {
-    const query = JSON.parse(opts.body);
-    if (url.includes("c.invalid") && query.method === "eth_getCode") {
-      return await new Promise((_, reject) =>
-        opts.signal.addEventListener("abort", () => {
-          cancelled = true;
-          reject(Error("aborted"));
-        }, { once: true })
-      );
-    }
-    let result = query.method === "eth_chainId"
-      ? "0x14a34"
-      : query.method === "eth_getBlockByNumber"
-      ? base.block
-      : code;
-    return Response.json({ jsonrpc: "2.0", id: 1, result });
-  };
-  const q = new Quorum({ ...cfg, now: () => now, fetcher });
-  await q.snapshot();
-  assert.equal(cancelled, true);
-});

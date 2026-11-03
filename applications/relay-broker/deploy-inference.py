@@ -88,7 +88,7 @@ def prepare(args):
             for source in sorted(APP.iterdir()):
                 if source.suffix in (".mjs", ".ts") and source.name not in ("near-attestation.mjs", "deno-forwarder.mjs", "encrypt-provider-env.mjs") and not source.name.endswith((".test.mjs", ".test.ts", "_test.ts")):
                     archive.add(source, arcname="applications/relay-broker/" + source.name)
-            for name in ("quorum.mjs", "admission.mjs"):
+            for name in ("chain-reader.mjs", "rpc.mjs", "admission.mjs"):
                 archive.add(REPO / "applications/payments" / name, arcname="applications/payments/" + name)
             archive.add(bundled, arcname="applications/payments/schema.mjs")
             attestation = Path(temporary) / "near-attestation.mjs"
