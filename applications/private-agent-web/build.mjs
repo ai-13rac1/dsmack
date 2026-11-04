@@ -32,6 +32,7 @@ await build({
   logLevel: "info",
 });
 await copyFile(resolve(app, "style.css"), resolve(app, "dist/style.css"));
+await cp(resolve(app, "assets"), resolve(app, "dist/assets"), { recursive: true });
 const config = JSON.parse(await readFile(process.env.PAGE_CONFIG || resolve(app, "config.json"), "utf8"));
 if (process.env.PAGE_TARGET === "staging") {
   const origin = process.env.PAGE_STAGING_ORIGIN || "https://private-agent-staging.dstack.soc1024.com";

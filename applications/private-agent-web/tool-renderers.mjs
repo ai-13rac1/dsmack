@@ -14,7 +14,8 @@ registerToolRenderer("bash", {
     const output = result?.content?.filter(c => c.type === "text").map(c => c.text).join("\n") || "";
     const command = params?.command;
     const label = completed ? (result.isError ? "bash · failed" : "bash · completed") : "bash · running";
-    return { isCustom: false, content: html`<div class="space-y-3">
+    return { isCustom: false, content: html`<div class="dsmack-sandbox space-y-3">
+      <span class="sandbox-label">Dsmack sandbox</span>
       ${renderHeader(state, SquareTerminal, label)}
       ${command || output ? html`<console-block .content=${[command ? `> ${command}` : "", output].filter(Boolean).join("\n\n")} .variant=${result?.isError ? "error" : "default"}></console-block>` : ""}
     </div>` };

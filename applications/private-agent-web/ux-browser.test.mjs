@@ -46,7 +46,7 @@ const server = createServer({ key: await readFile(keyPath), cert: await readFile
     const path = new URL(req.url, 'http://local').pathname.replace(/^\/private-agent\//, '') || 'index.html';
     const file = resolve('dist', path); assert(file.startsWith(resolve('dist') + '/'));
     const data = await readFile(file);
-    res.writeHead(200, { 'content-type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json' })[extname(file)] });
+    res.writeHead(200, { 'content-type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.png': 'image/png' })[extname(file)] });
     res.end(data);
   } catch (e) { res.writeHead(404); res.end(e.message); }
 });
@@ -105,6 +105,11 @@ try {
       });
       let releaseCredit, releasePrepare, releaseChat, creditStarted, prepareStarted, chatStarted;
       if (scenario === 'stages') {
+        assert(await page.locator('#empty-chat').isVisible(), 'empty conversation shows its mascot');
+        await page.waitForFunction(() => {
+          const mascot = document.querySelector('#empty-chat img');
+          return mascot?.complete && mascot.naturalWidth > 0;
+        });
         creditStarted = new Promise(reached => page.route('**/relay-broker/inference/credit', async route => {
           reached(); await new Promise(resolve => { releaseCredit = resolve; }); await route.fallback();
         }));
@@ -118,6 +123,7 @@ try {
       await send(page, 'Please inspect my code.');
       if (scenario === 'stages') {
         await creditStarted;
+        assert(await page.locator('#empty-chat').isHidden(), 'accepted prompt hides the empty conversation while credit is checked');
         assert(await page.locator('user-message').getByText('Please inspect my code.', { exact: true }).isVisible(),
           'accepted prompt is visible while credit check is held');
         await page.locator('.send-status[data-stage="credit"]').waitFor({state:'visible'});
@@ -162,6 +168,8 @@ try {
       } else if (scenario === 'stages') {
         await waitIdle();
         assert(await page.locator('.send-status').count() === 0, 'progress clears when the reply arrives');
+        await page.locator('#new-chat').click();
+        await page.locator('#empty-chat').waitFor({state:'visible'});
       } else if (scenario === 'local-only') {
         await waitIdle();
         await page.waitForFunction(() => document.querySelector('#chat').dataset.saved === 'true');

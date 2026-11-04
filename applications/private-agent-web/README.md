@@ -1,4 +1,6 @@
-# Private agent web
+# Abalone private agent web
+
+The Abalone mark and 256px mascot derivatives come from the project-owned `pages-mascot:assets/` illustrations in Abalone.
 
 The chain directory uses two matching replies from three configured HTTPS RPC
 hosts at a pinned block hash. Configure `chainDirectory.rpcs` in `config.json`.
@@ -38,7 +40,7 @@ deno run --allow-net --allow-read --allow-write --allow-run --allow-env \
   http://192.168.100.3:18766/ping/staging/capacity
 ```
 
-Dsmack Agent is one Pi conversation with `bash`, `read`, `write` and `edit`
+Abalone is one Pi conversation with `bash`, `read`, `write` and `edit`
 running in an attested Mac-hosted Linux guest. Tool calls and results appear
 inline. NEAR AI Cloud's model TEE is the default: model requests and responses
 remain encrypted between the browser and TEE; the broker forwards ciphertext

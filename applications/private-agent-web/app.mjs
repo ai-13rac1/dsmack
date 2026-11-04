@@ -406,7 +406,8 @@ const guestIndexKey = wallet => `artifact-guest-pending:${wallet.toLowerCase()}`
 let guestCard;
 function taskCard() {
   if (guestCard) return guestCard;
-  guestCard = document.createElement("section"); guestCard.id = "artifact-guest-card"; guestCard.hidden = true;
+  guestCard = document.createElement("section"); guestCard.id = "artifact-guest-card"; guestCard.className = "dsmack-sandbox"; guestCard.hidden = true;
+  const label = document.createElement("p"); label.className = "sandbox-label"; label.textContent = "Dsmack sandbox"; guestCard.append(label);
   const title = document.createElement("h3"); title.textContent = "Run app command in a fresh guest";
   guestCard.append(title);
   for (const [tag, attribute] of [["p","guest-filename"],["p","guest-wallet"],["p","guest-credit"],["p","guest-timeout"],["pre","guest-command"],["p","guest-status"]]) {
@@ -606,7 +607,7 @@ async function useSession(data) {
   }
   const systemPrompt = ({ model = agent.state.model, runtime }) => buildAgentPrompt({
     config: cfg, pageUrl: window.location.href,
-    runtime: { preamble: "You are Dsmack Agent, a coding assistant in the Dsmack private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. " + modelPrivacy(model) + "\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
+    runtime: { preamble: "You are Abalone, a coding assistant in the Abalone private agent page. Use the provided tools to inspect and change the attested Mac-hosted Linux workspace. " + modelPrivacy(model) + "\n\n" + runtime + "\n\nThe application supplies these runtime facts. Your self-report is not proof; refer to the verified attestation shown by the page." },
     environment: guest.environment || measuredEnvironment(),
     attestation: guest.node ? { verification: "Browser verified Apple enrollment, build, measured compose and bound Noise peer", guestPeer: guest.node.registration.relay_peer, manifestHash: guest.node.registration.manifest_sha256, imageHash: guest.node.registration.os_image_hash, cdhash: guest.node.registration.cdhash } : { status: "Guest attestation will be verified before the first tool call.", cdhash: policy.cdhash },
     repository: "Initial repository snapshot; use the read tool for current workspace contents.\n" + [...repoFiles].map(([name, text]) => `${name}\n${text.length < 4096 ? text : "Read this file with the read tool."}`).join("\n"),
@@ -614,7 +615,7 @@ async function useSession(data) {
   const preflight = (context, signal) => guest.preflight(context, signal, policy.manifest);
   agent = new Agent({
     initialState: {
-      systemPrompt: "You are the dsmack private agent. Use your tools to inspect and change the attested workspace.",
+      systemPrompt: "You are the Abalone private agent. Use your tools to inspect and change the attested workspace.",
       messages: currentSession.messages,
       thinkingLevel: "off",
       tools: [...guest.tools(), ...(artifacts ? [artifacts.tool] : [])],
@@ -784,7 +785,10 @@ async function initChat() {
   });
   chat.id = "chat";
   // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
+  const emptyChat = $("empty-chat");
   chat.updated = () => {
+    emptyChat.hidden = agent.state.messages.some(message => message.role === "user");
+    chat.querySelector("message-list")?.before(emptyChat);
     const editor = chat.querySelector("message-editor");
     if (editor) editor.updateComplete.then(() => {
       const button = editor.querySelector("button:last-child");

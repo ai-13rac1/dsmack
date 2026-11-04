@@ -22,7 +22,7 @@ export function modelBadge(model) {
     return `${model.id} · ${providerLabel(model)} sees the conversation · paid with your provider key`;
   const label = model.id === "unavailable" ? "Model unavailable"
     : model.id.split("/").at(-1).replace(/-\d{4,8}$/, "").replaceAll("-", " ");
-  return `${label} via NEAR AI · paid from your Dsmack credit`;
+  return `${label} via NEAR AI · paid from your Abalone credit`;
 }
 export function directModel(provider, id, baseUrl) {
   if (!id.trim()) throw Error("Enter a model ID.");
