@@ -64,8 +64,6 @@ try {
         'data: '+JSON.stringify({model,choices:[{delta:{content},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n'});
     });
     const cfg=await (await page.request.get(new URL('config.json',base).href)).json();
-    const {policy}=await import('./test-fixtures/near.mjs');
-    cfg.nearAttestation=policy;
     cfg.syncAnchorCodeHash=keccak256('0x6000');
     cfg.pageBundleRegistry={registry:await registry.getAddress(),rpcs:[new URL('/rpc/a',base).href,new URL('/rpc/b',base).href]};
     await page.route('**/config.json',route=>route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));

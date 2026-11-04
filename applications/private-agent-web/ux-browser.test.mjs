@@ -12,7 +12,7 @@ await mkdir(evidence, { recursive: true });
 const tls = await mkdtemp(resolve(evidence, 'tls-'));
 const keyPath = resolve(tls, 'key.pem'), certPath = resolve(tls, 'cert.pem');
 await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-keyout', keyPath, '-out', certPath]);
-import { model, policy } from './test-fixtures/near.mjs';
+import { model } from './test-fixtures/near.mjs';
 function encrypt(text, publicKey) {
   const ephemeral = Wallet.createRandom(), nonce = randomBytes(12);
   const point = Buffer.from(new SigningKey(ephemeral.privateKey).computeSharedSecret('0x04' + publicKey).slice(2), 'hex');
@@ -64,12 +64,12 @@ try {
     page.setDefaultTimeout(15000);
     page.on('pageerror', e => errors.push(e.message));
     page.on('console', msg => logs.push(msg.type() + ': ' + msg.text()));
-    await page.route('**/*', route => new URL(route.request().url()).origin === new URL(base).origin ? route.continue() : route.abort());
+    // NEAR image provenance is read from the public Rekor log.
+    await page.route('**/*', route => [new URL(base).origin, 'https://rekor.sigstore.dev'].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
     const calls = await backend(page, 'ux');
     if (scenario === 'local-only') {
       const localConfig = await (await page.request.get(new URL('config.json', base).href)).json();
       localConfig.broker = new URL('/relay-broker', base).href;
-      localConfig.nearAttestation = policy;
       delete localConfig.syncAnchor; delete localConfig.syncAnchorCodeHash;
       await page.route('**/config.json', route => route.fulfill({headers:publicHeaders,body:JSON.stringify(localConfig)}));
     }

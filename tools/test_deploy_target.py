@@ -146,8 +146,7 @@ class SourceGateTests(unittest.TestCase):
             dist=root/'dist'; dist.mkdir()
             (dist/'index.html').write_text('page')
             (dist/'config.json').write_text(json.dumps(dict(
-                broker=WEBHOST+'/relay-broker-staging', tunnels=WEBHOST+'/private-agent-staging/tunnels',
-                nearAttestation=dict(gatewayComposeHashes=['a'*64], modelComposeHashes=['b'*64]))))
+                broker=WEBHOST+'/relay-broker-staging', tunnels=WEBHOST+'/private-agent-staging/tunnels')))
             payload=bundle.payload(dist); own=bundle.cid(payload)
             (dist/'page-bundle.tar').write_bytes(payload)
             (dist/'index.html').write_text(f'<meta name="page-bundle-cid" content="{own}">page')
@@ -195,8 +194,7 @@ class SourceGateTests(unittest.TestCase):
             root=Path(tmp)
             (root/'index.html').write_text('page')
             (root/'config.json').write_text(json.dumps(dict(
-                pageBundleRegistry=dict(registry='0x'+'11'*20, rpcs=['https://rpc-a.invalid', 'https://rpc-b.invalid']),
-                nearAttestation=dict(gatewayComposeHashes=['a'*64], modelComposeHashes=['b'*64]))))
+                pageBundleRegistry=dict(registry='0x'+'11'*20, rpcs=['https://rpc-a.invalid', 'https://rpc-b.invalid']))))
             page_env=root/'page-env.json'; page_env.write_text('{"EMAIL_RECOVERY_ADDRESS":"recovery@example.invalid"}')
             class Opener:
                 def open(self, request, timeout):

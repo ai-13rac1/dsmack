@@ -29,7 +29,6 @@ export class NearProvider {
       apiKey,
       fetcher = fetch,
       verifyAttestation = verifyNearAttestation,
-      attestationPolicy,
       baseUrl = "https://cloud-api.near.ai",
     } = {},
   ) {
@@ -37,7 +36,6 @@ export class NearProvider {
       apiKey,
       fetcher,
       verifyAttestation,
-      attestationPolicy,
       baseUrl: baseUrl.replace(/\/$/, ""),
     });
   }
@@ -138,7 +136,6 @@ export class NearProvider {
         nonce,
         model,
         baseUrl: this.baseUrl,
-        policy: this.attestationPolicy,
         fetcher: this.fetcher,
       });
       need(
