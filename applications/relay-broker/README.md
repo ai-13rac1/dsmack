@@ -33,8 +33,13 @@ CDHASH` verifies the Apple chain and emits a public enrollment entry for the
 config's `enrollments` array.
 
 Configure the prepaid USDC `payments` block as in `../payments/README.md`. Add the
-`inference` block from `config.inference.example.json`, including approved NEAR
-gateway/model compose hashes and allowed browser origins. Amounts are integer
+`inference` block from `config.inference.example.json`, including allowed
+browser origins. NEAR gateway and model evidence must satisfy `near-policy.mjs`,
+which mirrors 13rac1/teep's nearcloud policy (commit in `TEEP_COMMIT`):
+MRCONFIGID binds `app_compose`, each digest-pinned image is an approved
+repository with a Rekor entry from its expected Fulcio identity or key (SET and
+inclusion proof verified), and MRSEAM/MRTD/RTMR1/RTMR2 match known values.
+Values teep lacks are marked `LOCAL`. Amounts are integer
 nano-USD: 1,000,000,000 equals $1.00. The browser receives starter credit and
 requests an attested model session before encrypting its messages. A dispatch
 reserves its maximum cost; billing evidence reconciles that reservation.

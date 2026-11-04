@@ -161,7 +161,6 @@ export function brokerStream(
           started,
           attestationNonce,
           session.modelPublicKey,
-          cfg.nearAttestation,
         );
         require(
           /^[0-9a-f]{32}$/.test(session.sessionId),

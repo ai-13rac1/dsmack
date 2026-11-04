@@ -1,6 +1,7 @@
 import { computeAddress } from "ethers";
 import { verifyGatewayAttestation, verifyDirectModelAttestation } from "@nearai/inference-sdk";
 import { getCollateral, verify } from "@phala/dcap-qvl";
+import { nearVerifiers } from "../relay-broker/near-policy.mjs";
 const require = (ok, message) => { if (!ok) throw new Error(message); };
 export const PRIVACY = "Messages encrypted in browser to the NEAR model TEE; broker meters ciphertext.";
 
@@ -12,9 +13,6 @@ function normalized(raw) {
   return { nonce: raw.request_nonce, signer: { signingAlgo: raw.signing_algo, signingAddress: raw.signing_address },
     intelQuote: raw.intel_quote, eventLog: tcb.event_log ?? raw.event_log, appCompose: tcb.app_compose,
     ...(raw.report_data ? { reportedQuoteData: raw.report_data } : {}) };
-}
-function deploymentPolicy(allowed) {
-  return deployment => require(allowed?.includes(deployment.runtimeMeasurements.composeHash), "NEAR deployment is not in this page's approved compose hashes.");
 }
 async function tdxQuote(quote) {
   require(/^(?:[0-9a-f]{2})+$/i.test(quote), "Invalid NEAR quote encoding.");
@@ -29,7 +27,7 @@ async function tdxQuote(quote) {
 const summary = v => ({ signingAddress: v.signer.signingAddress, tcbStatus: v.tcbStatus,
   advisoryIds: v.advisoryIds, composeHash: v.deployment.runtimeMeasurements.composeHash });
 
-export async function checkEvidence(e, model, started, expectedNonce, modelPublicKey, policy) {
+export async function checkEvidence(e, model, started, expectedNonce, modelPublicKey) {
   require(e?.provider === "near" && e.model === model && e.mode === "broker-e2ee", "Provider attestation is invalid or names another model.");
   require(/^[0-9a-f]{64}$/.test(expectedNonce), "Provider attestation needs a 32-byte client challenge.");
   const report = e.report, rawGateway = report?.gateway_attestation;
@@ -40,7 +38,7 @@ export async function checkEvidence(e, model, started, expectedNonce, modelPubli
     // observe the live peer SPKI (NEAR's /cloud/verification/cloud-api/tls).
     clientBinding: { nonce: expectedNonce, spkiFingerprint: rawGateway.tls_cert_fingerprint },
     policy: { acceptedTcbStatuses: ["UpToDate"] },
-    verifiers: { tdxQuote, deployment: deploymentPolicy(policy?.gatewayComposeHashes) },
+    verifiers: nearVerifiers("gateway", rawGateway.intel_quote, tdxQuote),
   });
   require(report.model_attestations?.length > 0, "NEAR model quotes are missing.");
   const models = await Promise.all(report.model_attestations.map(async raw => {
@@ -56,7 +54,7 @@ export async function checkEvidence(e, model, started, expectedNonce, modelPubli
           nonce: manager.nonce, intelQuote: manager.quote, eventLog: manager.event_log, reportedQuoteData: manager.report_data } } : {}) },
       clientBinding: { nonce: expectedNonce },
       policy: { acceptedTcbStatuses: ["UpToDate"], gpuEvidence: "required" },
-      verifiers: { tdxQuote, deployment: deploymentPolicy(policy?.modelComposeHashes) },
+      verifiers: nearVerifiers("model", raw.intel_quote, tdxQuote),
     });
     require(v.signingPublicKey, "NEAR model encryption key is missing.");
     let key = modelPublicKey?.replace(/^0x/, "");

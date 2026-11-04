@@ -74,7 +74,6 @@ async function load(ctx: Context) {
       ? new NearProvider({
         ...cfg.inference,
         apiKey: secrets.NEAR_API_KEY,
-        attestationPolicy: cfg.inference,
       })
       : undefined;
     inference = new Inference({ payments, cfg: cfg.inference, provider });

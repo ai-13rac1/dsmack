@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { verifyMessage, Wallet, keccak256 } from "ethers";
 const base = process.env.BASE_URL || "http://127.0.0.1:18731/private-agent/";
-import { report, model, policy, replayNear } from "./near.mjs";
+import { report, model, replayNear } from "./near.mjs";
 const modelPublicKey = report.model_attestations[0].signing_public_key;
 const canonical = (o) =>
   JSON.stringify(
@@ -24,7 +24,6 @@ export async function backend(page, kind) {
   const cfg = await (await page.request.get(new URL("config.json", base).href))
     .json();
   if (kind === "ux") cfg.broker = new URL("/relay-broker", base).href;
-  cfg.nearAttestation = policy;
   cfg.syncAnchor = "0x" + "11".repeat(20);
   cfg.syncAnchorCodeHash = keccak256("0x6000");
   await page.route("**/config.json", route => route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));

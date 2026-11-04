@@ -115,9 +115,6 @@ def main():
             raise ValueError("Remove pageBundleRegistry when skipping staging publication")
     elif not registry or len(registry["rpcs"]) != 2 or registry["rpcs"][0] == registry["rpcs"][1]:
         raise ValueError("Page bundle registry requires two independent RPCs")
-    for hashes in ("gatewayComposeHashes", "modelComposeHashes"):
-        if not config["nearAttestation"][hashes]:
-            raise ValueError("Configure reviewed NEAR compose hashes before deployment")
     archive = package(args.dist.resolve(), args.target, args.config, args.staging_origin)
     args.evidence.mkdir(parents=True, exist_ok=True)
     admin = token()

@@ -179,12 +179,14 @@ forge create --root contracts contracts/src/PageBundleRegistry.sol:PageBundleReg
 
 Set `config.json.pageBundleRegistry` to `{ "registry": "0x…", "rpcs":
 ["https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com"] }`.
-Set `nearAttestation.gatewayComposeHashes` and `modelComposeHashes` to the
-reviewed NEAR deployment compose SHA-256 hashes, then rebuild. The browser
-checks Intel TDX quotes, signer/nonce/SPKI bindings, measured configuration,
-RTMR3 events, compose-manager evidence, the E2EE model key, and NVIDIA's signed
-NRAS verdict before encrypting the prompt. Verification uses NEAR's public
-PCCS/NRAS proxies and NVIDIA's JWKS endpoint. Raw NEAR reports travel through
+The browser checks Intel TDX quotes, signer/nonce/SPKI bindings, measured
+configuration, RTMR3 events, compose-manager evidence, the E2EE model key, and
+NVIDIA's signed NRAS verdict before encrypting the prompt. It applies the NEAR
+deployment policy in `../relay-broker/near-policy.mjs`: MRCONFIGID binds
+`app_compose`, every pinned image is an approved repository with Rekor
+provenance from its expected signer, and MRSEAM, MRTD, RTMR1 and RTMR2 name a
+known OS. Verification uses NEAR's public PCCS/NRAS proxies, NVIDIA's JWKS
+endpoint and `rekor.sigstore.dev`. Raw NEAR reports travel through
 the broker; its verification summary is not an input to the browser's decision.
 
 Deployment waits up to ten minutes for `/relay-broker/network` busy slots and
