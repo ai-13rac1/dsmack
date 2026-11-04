@@ -73,6 +73,11 @@ try {
     // NEAR image provenance is read from the public Rekor log.
     await page.route('**/*', route => [new URL(base).origin, 'https://rekor.sigstore.dev'].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
     const calls = await backend(page, 'ux');
+    if (scenario === 'stages') await page.route('**/relay-broker/inference/usage', route => route.fulfill({
+      headers: publicHeaders, json: { wallet: route.request().postDataJSON().wallet.toLowerCase(),
+        remainingNanoUsd: '249963688', spentNanoUsd: '36312', reservedNanoUsd: '0',
+        usedTokens: '12', pendingInferenceId: null },
+    }));
     if (scenario === 'local-only') {
       const localConfig = await (await page.request.get(new URL('config.json', base).href)).json();
       localConfig.broker = new URL('/relay-broker', base).href;
@@ -230,6 +235,11 @@ try {
       } else if (scenario === 'stages') {
         await waitIdle();
         assert(await page.locator('.send-status').count() === 0, 'progress clears when the reply arrives');
+        const settledCost = await page.evaluate(() => document.querySelector('#chat').session.state.messages
+          .findLast(message => message.role === 'assistant').usage.cost.total);
+        assert.equal(settledCost, 0.000036312);
+        assert.match(await page.locator('#chat .text-right.h-5').innerText(), /^<\$0\.0001\b/,
+          'a settled sub-cent reply must not appear free');
         await page.locator('#new-chat').click();
         await page.locator('#empty-chat').waitFor({state:'visible'});
       } else if (['shared-first-send', 'scrolling'].includes(scenario) || scenario.startsWith('preflight-')) {

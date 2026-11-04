@@ -894,7 +894,8 @@ async function initChat() {
   chat.renderStats = () => {
     const total = (agent?.state.messages || []).reduce((sum, message) =>
       sum + (message.role === "assistant" ? message.usage?.cost?.total || 0 : 0), 0);
-    return html`<div class="text-xs text-muted-foreground text-right h-5">$${total.toFixed(4)} used this chat</div>`;
+    const amount = total > 0 && total < 0.0001 ? "<$0.0001" : "$" + total.toFixed(4);
+    return html`<div class="text-xs text-muted-foreground text-right h-5">${amount} used this chat</div>`;
   };
   const active = await storage.settings.get("chat.active") || await storage.sessions.getLatestSessionId();
   const saved = active ? await storage.sessions.get(active) : null;
