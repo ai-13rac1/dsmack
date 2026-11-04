@@ -287,8 +287,9 @@ Use the final subdomain gateway origin in the broker allowlist.
 
 The chat header shows available credit and the model provider. While sending, the
 message appears immediately with credit, model verification and reply progress.
-USDC top-ups and the 14 day account exit are in Advanced → Add credit. The page
-refreshes credit after a deposit confirms. Guest
+Choose Add credit beside the balance or an out-of-credit message to open USDC
+top-ups and the 14 day account exit. The page refreshes credit after a deposit
+confirms. Guest
 seconds and inference draw from the same broker ledger; an unused guest grant is
 free and an admitted S1 stay has a 60 second minimum. To test top-ups, withdrawal
 and fleet USDC payouts using a local chain, build the contracts and page, run

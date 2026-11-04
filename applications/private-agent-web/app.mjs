@@ -11,7 +11,7 @@ import { ArtifactState } from "./artifact-state.mjs";
 import { ArtifactModels } from "./artifact-models.mjs";
 import { createSessionPersistence } from "./artifact-persistence.mjs";
 import { sealArtifact, openArtifact, artifactLink, parseArtifactLink, sharedScope, viewerSessionId } from "./artifact-share.mjs";
-import { html } from "lit";
+import { html, render as renderHtml } from "lit";
 import { installMessageFeedback } from "./chat-feedback.mjs";
 import { createChatStorage, saveChat, exportChats } from "./chat-storage.mjs";
 import { DeviceKeys } from "./keys.mjs";
@@ -61,9 +61,18 @@ async function startupStep(name, task) {
   try { return await task(); }
   finally { performance.measure("startup:" + name, { start, end: performance.now() }); }
 }
+function openAddCredit() {
+  $("advanced").open = true;
+  $("add-credit").open = true;
+  $("add-credit").scrollIntoView({ block: "center" });
+  $("deposit-amount").focus({ preventScroll: true });
+}
+function addCreditAction() {
+  return html` <button class="link add-credit-action" @click=${openAddCredit}>Add credit</button>`;
+}
 function error(e) {
   const failure = e.replyFailure || replyFailure(e);
-  $("alert").textContent = failure.message;
+  renderHtml(html`${failure.message}${failure.addCredit ? addCreditAction() : ""}`, $("alert"));
   $("alert").title = failure.detail || e.message || String(e);
   $("alert").hidden = false;
 }
@@ -77,8 +86,10 @@ function sendStatus(text, detail = "", stage = "") {
 }
 function sendFailure(e) {
   const failure = e.replyFailure || replyFailure(e);
-  if (sendingMessage) sendStatus(failure.message, failure.detail || e.message, "error");
-  else error(e);
+  if (sendingMessage) {
+    sendingMessage.sendAddCredit = !!failure.addCredit;
+    sendStatus(failure.message, failure.detail || e.message, "error");
+  } else error(e);
 }
 // Pi renders usage per reply by default. Keep its message renderer and omit
 // that optional field only during rendering; the ledger and chat total retain it.
@@ -93,7 +104,7 @@ const renderUser = UserMessage.prototype.render;
 UserMessage.prototype.render = function () {
   return html`${renderUser.call(this)}${this.message.sendStatus ? html`<p
     id=${this.message === sendingMessage ? "send-status" : ""} class="send-status" role="status"
-    data-stage=${this.message.sendStage || ""} title=${this.message.sendDetail || ""}>${this.message.sendStatus}</p>` : ""}`;
+    data-stage=${this.message.sendStage || ""} title=${this.message.sendDetail || ""}>${this.message.sendStatus}${this.message.sendAddCredit ? addCreditAction() : ""}</p>` : ""}`;
 };
 function syncFailure(e) {
   $("chat-status").hidden = false;
@@ -671,7 +682,7 @@ async function useSession(data) {
     // Pi's message list observes array references; the agent appends in place.
     if (event.type === "message_end") {
       if (event.message.role === "assistant") {
-        if (event.message.failure) sendStatus(event.message.failure.message, event.message.failure.detail, "error");
+        if (event.message.failure) sendFailure({ replyFailure: event.message.failure });
         else sendStatus("");
       }
       agent.state.messages = [...agent.state.messages];
@@ -1256,6 +1267,7 @@ async function main() {
   await startupStep("local-chat", initChat);
   render();
   $("recover-device").disabled = false;
+  $("open-add-credit").addEventListener("click", openAddCredit);
   action("copy-address", async () => {
     require(credit.address, "Create or connect a wallet first.");
     await navigator.clipboard.writeText(credit.address);

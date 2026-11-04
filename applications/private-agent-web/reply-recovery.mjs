@@ -18,19 +18,21 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     error?.ref && !original.includes(`ref ${error.ref}`) ? `ref ${error.ref}` : "",
   ].filter(Boolean).join(" · ");
   const interrupted = !!partial;
-  let category, message, retryable = true;
+  let category, message, retryable = true, addCredit = false;
   if (/request.*abort|operation.*abort/i.test(original)) {
     category = "cancelled";
     message = "Reply cancelled. Send a message or Retry.";
   } else if (code === "STARTER_BUDGET_EXHAUSTED") {
     category = "credit";
-    message = "Today's free credit is used up. Try again after 00:00 UTC, or add credit in Advanced → Add credit.";
+    message = "Today's free credit is used up. Try again after 00:00 UTC.";
+    addCredit = true;
     retryable = false;
   } else if (/CREDIT_EXHAUSTED|(?:ARTIFACT_)?BUDGET_EXHAUSTED/.test(code || original)) {
     category = "credit";
     message = /^(?:ARTIFACT_)?BUDGET_EXHAUSTED$/.test(code || "")
       ? "This app's credit is used up. Increase its allowed model budget before trying again."
-      : "You're out of credit. Add credit in Advanced → Add credit.";
+      : "You're out of credit.";
+    addCredit = !/^(?:ARTIFACT_)?BUDGET_EXHAUSTED$/.test(code || "");
     retryable = false;
   } else if (code === "FLEET_BUSY" || code === "FLEET_EMPTY") {
     category = "capacity";
@@ -77,7 +79,7 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
       ? "Couldn't complete this request. Retry, or reload the page."
       : original;
   }
-  return { category, message, retryable, interrupted, detail };
+  return { category, message, retryable, interrupted, detail, ...(addCredit ? { addCredit: true } : {}) };
 }
 
 export function retryCandidate(messages) {

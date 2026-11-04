@@ -436,10 +436,30 @@ try {
   await run("insufficient-reservation-refused-before-chat", "insufficient", async (page, calls) => {
 
     await page.waitForFunction(() => document.querySelector("#chat-credit").dataset.remainingNanoUsd === "1");
+    assert.equal(await page.locator("#advanced").evaluate(view => view.open), false);
+    assert(await page.locator("#deposit").isHidden());
+    await page.locator("#open-add-credit").click();
+    assert.equal(await page.locator("#advanced").evaluate(view => view.open), true);
+    assert.equal(await page.locator("#add-credit").evaluate(view => view.open), true);
+    assert(await page.locator("#deposit-amount").isVisible());
+    await page.waitForFunction(() => {
+      const bounds = document.querySelector("#deposit").getBoundingClientRect();
+      return bounds.top >= 0 && bounds.bottom <= innerHeight;
+    });
+    await page.locator("#add-credit, #advanced").evaluateAll(views => views.forEach(view => { view.open = false; }));
     await send(page, "Private text must stay here when the token reservation exceeds credit.");
     await alert(page, "CREDIT_EXHAUSTED: Chat credit used up\\.");
     assert(calls.some((r) => r.path === "/inference/prepare"));
     assert(!calls.some((r) => r.path === "/inference/chat"), "Underfunded prompt left the browser");
+    assert.equal(await page.locator("#advanced").evaluate(view => view.open), false);
+    await page.locator(".send-status .add-credit-action").click();
+    assert.equal(await page.locator("#advanced").evaluate(view => view.open), true);
+    assert.equal(await page.locator("#add-credit").evaluate(view => view.open), true);
+    assert(await page.locator("#deposit-amount").isVisible());
+    await page.waitForFunction(() => {
+      const bounds = document.querySelector("#deposit").getBoundingClientRect();
+      return bounds.top >= 0 && bounds.bottom <= innerHeight;
+    });
   });
   await run(
     "starter-credit-and-encrypted-wire",
