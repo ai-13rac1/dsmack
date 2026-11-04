@@ -15,9 +15,9 @@ const deploy=async(path,args=[])=>{
 const token=await deploy("../../contracts/out/UsageEscrow.t.sol/MockUSDC.json");
 const rail=await deploy("../../contracts/out/UsageEscrow.sol/UsageEscrow.json",[await token.getAddress(),await owner.getAddress()]);
 const cfg=JSON.parse(await readFile("dist/config.json"));
+delete cfg.pageBundleRegistry;
 cfg.escrow=await rail.getAddress();cfg.codeHash=keccak256(await provider.getCode(cfg.escrow));
 const claimKey=Wallet.createRandom();
-cfg.grantSigner=claimKey.address;cfg.brokerKey="12".repeat(32);
 await (await rail.registerBroker(claimKey.address)).wait();
 const fleetCfg={...cfg,rpc:"https://base-sepolia-rpc.publicnode.com",broker:"https://pod.dstack.soc1024.com/relay-broker",deploymentBlock:0,classesByPublisher:{}};
 const errors=[];
@@ -73,18 +73,20 @@ try {
   return route.fulfill({status:response.status,headers:{...headers,"content-type":"application/json"},body:await response.text()});
  });
  await page.goto(origin+"/private-agent/");
- await page.locator("#start-fresh").click();
+ await page.waitForFunction(()=>document.documentElement.dataset.servicesReady === "true");
+ await page.evaluate(() => document.querySelector("#chat").onBeforeSend()).catch(error => {
+  if (!/CREDIT_EXHAUSTED/.test(error.message)) throw error;
+ });
  await page.waitForFunction(()=>/^0x[0-9a-fA-F]{40}$/.test(document.querySelector("#wallet").textContent));
  const wallet=await page.locator("#wallet").textContent();
  await (await owner.sendTransaction({to:wallet,value:10n**18n})).wait();
  await (await token.mint(wallet,1000000)).wait();
  await page.locator("#advanced > summary").click();
- await page.getByText("Prepaid USDC",{exact:true}).click();
+ await page.getByText("Add credit",{exact:true}).click();
  await page.locator("#deposit-amount").fill("1");
  await page.locator("#deposit").click();
  await page.waitForFunction(()=>document.querySelector("#prepaid-status").textContent.startsWith("USDC deposited."));
  assert.equal(await rail.deposits(wallet),1000000n);
- await page.locator("#refresh").click();
  await page.waitForFunction(()=>document.querySelector("#chat-credit").dataset.remainingNanoUsd==="1000000000");
  await page.screenshot({path:evidence+"/prepaid-deposit.png",fullPage:true});
  await page.locator("#refund").click();
@@ -113,7 +115,7 @@ try {
  assert.equal(await page.locator("#error").isVisible(),false);
  await page.screenshot({path:evidence+"/operator-usdc.png",fullPage:true});
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({wallet,depositUsdcUnits:"1000000",refundedUsdcUnits:"1000000",flow:"start fresh -> deposit -> refresh -> request exit -> withdraw"}));
+ console.log(JSON.stringify({wallet,depositUsdcUnits:"1000000",refundedUsdcUnits:"1000000",flow:"create wallet -> deposit and refresh automatically -> request exit -> withdraw"}));
 } catch(error) {
  console.error(await page.locator("body").innerText());
  await page.screenshot({path:evidence+"/prepaid-failure.png",fullPage:true});

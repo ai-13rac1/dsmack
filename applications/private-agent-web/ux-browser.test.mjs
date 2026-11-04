@@ -57,7 +57,7 @@ const { backend, ready, send, publicHeaders } = await import('./test-fixtures/br
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const results = [];
 try {
-  for (const width of [390, 1280]) for (const scenario of ['cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy', 'local-only']) {
+  for (const width of [390, 1280]) for (const scenario of ['stages', 'cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy', 'local-only']) {
     mode = scenario; turns = 0;
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width, height: 900 } });
     const page = await context.newPage(), errors = [], logs = [];
@@ -86,10 +86,10 @@ try {
       });
     }
     try {
-      await ready(page); await page.locator('#start-fresh').click();
-      await page.waitForFunction(() => !!document.querySelector('#chat-credit').dataset.remainingNanoUsd);
+      await ready(page);
       assert.equal(await page.locator('#advanced').getAttribute('open'), null);
       assert(await page.locator('message-editor #repo').isVisible(), 'attachment in composer');
+      if (scenario === 'guest') await page.evaluate(() => document.querySelector('#chat').onBeforeSend());
       if (scenario === 'guest') await page.evaluate(() => {
         document.querySelector('#chat').session.state.tools.find(t => t.name === 'bash').execute = async (_id, _args, _signal, update) => {
           update({ content: [{ type: 'text', text: 'Guest started command…' }] });
@@ -103,7 +103,32 @@ try {
           body: JSON.stringify(all ? scenario === 'empty' ? [] : [{ kind: 'compute', available: false }]
             : { error: { code: scenario === 'empty' ? 'FLEET_EMPTY' : 'FLEET_BUSY', retryAfterSeconds: 2 } }) });
       });
+      let releaseCredit, releasePrepare, releaseChat, creditStarted, prepareStarted, chatStarted;
+      if (scenario === 'stages') {
+        creditStarted = new Promise(reached => page.route('**/relay-broker/inference/credit', async route => {
+          reached(); await new Promise(resolve => { releaseCredit = resolve; }); await route.fallback();
+        }));
+        prepareStarted = new Promise(reached => page.route('**/relay-broker/inference/prepare', async route => {
+          reached(); await new Promise(resolve => { releasePrepare = resolve; }); await route.fallback();
+        }));
+        chatStarted = new Promise(reached => page.route('**/relay-broker/inference/chat', async route => {
+          reached(); await new Promise(resolve => { releaseChat = resolve; }); await route.fallback();
+        }));
+      }
       await send(page, 'Please inspect my code.');
+      if (scenario === 'stages') {
+        await creditStarted;
+        assert(await page.locator('user-message').getByText('Please inspect my code.', { exact: true }).isVisible(),
+          'accepted prompt is visible while credit check is held');
+        await page.locator('.send-status[data-stage="credit"]').waitFor({state:'visible'});
+        releaseCredit();
+        await prepareStarted;
+        await page.locator('.send-status[data-stage="verify"]').waitFor({state:'visible'});
+        releasePrepare();
+        await chatStarted;
+        await page.locator('.send-status[data-stage="reply"]').waitFor({state:'visible'});
+        releaseChat();
+      }
       await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') || document.querySelector('#chat').session.state.isStreaming);
       const waitIdle = () => page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming);
       const cancel = () => page.locator('message-editor').getByRole('button', { name: /abort|cancel|stop/i }).click();
@@ -134,10 +159,13 @@ try {
         }
         assert(closedStreams > 0);
         assert(pendingSync.length > 0, "cancel, retry and send finish while remote sync is stalled");
+      } else if (scenario === 'stages') {
+        await waitIdle();
+        assert(await page.locator('.send-status').count() === 0, 'progress clears when the reply arrives');
       } else if (scenario === 'local-only') {
         await waitIdle();
         await page.waitForFunction(() => document.querySelector('#chat').dataset.saved === 'true');
-        await page.locator('#sync-status').getByText('Chats save on this device.',{exact:true}).waitFor({state:'attached'});
+        assert.equal(await page.locator('#chat-status').textContent(), '');
         assert(await page.locator('#alert').isHidden());
         await ready(page);
         await page.locator('user-message').getByText('Please inspect my code.',{exact:true}).waitFor();
@@ -201,13 +229,7 @@ try {
         assert.equal(settled.length, 1); assert.equal(settled[0].isError, true);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · running' }).count(), 0);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · failed' }).count(), 1);
-        if (scenario === 'guest') {
-          const toolFeedback = page.locator('tool-message message-feedback');
-          await toolFeedback.getByRole('button', { name: 'Feedback', exact: true }).click();
-          await toolFeedback.getByRole('textbox', { name: 'Message feedback' }).fill('Please explain the tool failure.');
-          await toolFeedback.getByRole('button', { name: 'Save', exact: true }).click();
-          await toolFeedback.getByText('Please explain the tool failure.', { exact: true }).waitFor();
-        }
+        assert.equal(await page.locator('user-message message-feedback, tool-message message-feedback').count(), 0);
         if (scenario === 'orphan') {
           await page.locator('#retry-reply').click();
           await page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming && document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2);

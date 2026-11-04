@@ -31,8 +31,9 @@ test("changing endpoint cannot reuse another endpoint's key", () => {
 });
 
 test("badge and preamble identify who receives the conversation", () => {
-  assert.equal(modelBadge(near), "near-model");
-  assert.match(modelPrivacy(near), /encrypted.*NEAR model TEE/);
+  assert(modelBadge(near).includes("near model"));
+  assert(modelBadge(near).includes("NEAR AI"));
+  assert.doesNotMatch(modelPrivacy(near), /NEAR model TEE/);
   for (const model of [compatible(), directModel("anthropic", defaultAnthropicModel)]) {
     assert.match(modelBadge(model), /sees the conversation/);
     assert.match(modelPrivacy(model), /sees the conversation/);

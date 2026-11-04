@@ -55,11 +55,11 @@ Interrupted. Retry resends the last user/tool context without adding another
 user message. NEAR retries check the broker ledger first, and the page shows
 the settled model charge. Retries make a new model request.
 
-Choose Start fresh to generate a browser wallet and a random data key locally.
-The wallet receives $0.250000 credit for model tokens and guest seconds. The first
+Your first message creates a browser wallet and a random data key locally.
+The wallet receives $0.25 credit for model tokens and sandbox time. The first
 tool call claims a guest, verifies its Apple attestation and
 measured compose, and opens a Noise-authenticated libp2p stream to it. The page
-shows the guest, its attestation and seconds used. End session releases it;
+shows the guest, its attestation and seconds used. Stop sandbox releases it;
 five idle minutes also release it.
 
 The browser and guest use Pi agent-core, pi-ai and pi-coding-agent 1.4.0.
@@ -96,8 +96,7 @@ their own encrypted storage and model credit. Apps can call `dsmack.guest.run({c
 viewer's state and the budget bound to the ciphertext CID.
 
 Attach your code in the composer accepts a tar or gzipped tar of UTF-8 files,
-without `.git`, before the first tool call. Download changes beside the
-conversation exports the workspace diff. The workspace starts empty. Repository
+without `.git`, before the first tool call. The workspace starts empty. Repository
 content is marked untrusted in the prompt. The guest workspace persists until
 release. The wallet and conversations persist in IndexedDB. At
 https://private-agent.dstack.soc1024.com, Use on another device offers passkey
@@ -116,7 +115,7 @@ loading remote sessions. Refresh loads changes made on another device.
 
 Saved chats offers Export chats for the current conversation or all saved sessions
 as JSONL, including messages, tool calls, tool outputs, metadata and feedback.
-Use Feedback below a message or tool result to save a note with that conversation.
+Use Feedback below a reply to save a note with that conversation.
 
 Email recovery verifies the gate's Intel TDX quote, OS boot measurements, event
 log and quoted ECDH key in the browser. It checks the webhost app's live Base
@@ -160,7 +159,7 @@ approved measured compose and Apple enrollment. The guest's tools run as an
 unprivileged user within `/workspace`; the measured firewall and CONNECT proxy
 apply the guest's host allowlist to commands.
 
-The saved wallet renders before chat sync, broker checks and RPC calls. A first visit offers Start fresh or recovery; creating a wallet is explicit. After receiving credit or saving a chat, add a passkey or email on the original browser to return on another device.
+The saved wallet renders before chat sync, broker checks and RPC calls. A first visit offers the composer and Recover from another device; the first send creates a wallet automatically. After receiving credit or saving a chat, add a passkey or email on the original browser to return on another device.
 
 The build produces `dist/page-bundle.tar`: a deterministic USTAR payload of the
 page assets and configuration. Its CIDv1 raw/SHA-256 identifies the payload;
@@ -286,7 +285,10 @@ while this publisher keeps serving pins. `kill -TERM PUBLISHER_PID` stops its
 daemon and tunnel, retaining the repository, pins and key for the next launch.
 Use the final subdomain gateway origin in the broker allowlist.
 
-USDC top-ups and the 14 day account exit are in the Prepaid USDC details. Guest
+The chat header shows available credit and the model provider. While sending, the
+message appears immediately with credit, model verification and reply progress.
+USDC top-ups and the 14 day account exit are in Advanced → Add credit. The page
+refreshes credit after a deposit confirms. Guest
 seconds and inference draw from the same broker ledger; an unused guest grant is
 free and an admitted S1 stay has a 60 second minimum. To test top-ups, withdrawal
 and fleet USDC payouts using a local chain, build the contracts and page, run

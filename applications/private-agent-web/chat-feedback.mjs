@@ -1,5 +1,5 @@
 import { html, LitElement } from "lit";
-import { UserMessage, AssistantMessage, ToolMessage } from "@pi-components/components/Messages.js";
+import { AssistantMessage } from "@pi-components/components/Messages.js";
 
 class MessageFeedback extends LitElement {
   static properties = { records: {}, sessionId: {}, messageIndex: {}, editing: { state: true } };
@@ -25,14 +25,12 @@ class MessageFeedback extends LitElement {
 customElements.define("message-feedback", MessageFeedback);
 
 export function installMessageFeedback(context) {
-  for (const Component of [UserMessage, AssistantMessage, ToolMessage]) {
-    const render = Component.prototype.render;
-    Component.prototype.render = function () {
-      const { session, messages } = context();
-      const messageIndex = messages.indexOf(this.message || this.result);
-      return html`${render.call(this)}${messageIndex < 0 ? "" : html`<message-feedback
-        .sessionId=${session.id} .messageIndex=${messageIndex} .records=${session.feedback || []}
-      ></message-feedback>`}`;
-    };
-  }
+  const render = AssistantMessage.prototype.render;
+  AssistantMessage.prototype.render = function () {
+    const { session, messages } = context();
+    const messageIndex = messages.indexOf(this.message);
+    return html`${render.call(this)}${messageIndex < 0 ? "" : html`<message-feedback
+      .sessionId=${session.id} .messageIndex=${messageIndex} .records=${session.feedback || []}
+    ></message-feedback>`}`;
+  };
 }

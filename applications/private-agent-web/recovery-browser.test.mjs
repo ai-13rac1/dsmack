@@ -51,7 +51,7 @@ try {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ pending }) });
     });
     try {
-      await ready(page); await page.locator('#start-fresh').click();
+      await ready(page); await page.evaluate(() => document.querySelector('#chat').onBeforeSend());
       await page.waitForFunction(() => !!document.querySelector('#chat-credit').dataset.remainingNanoUsd);
       dk = await page.evaluate(async () => {
         const db = await new Promise((resolve, reject) => { const r = indexedDB.open('dsmack-private-agent', 1); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
@@ -111,7 +111,7 @@ try {
       await ready(page);
       await page.locator('#finish-email-recovery').waitFor({ state: 'visible' });
       assert.match(await page.locator('#continuity-status').innerText(), /Return to this browser after 48 hours/);
-      assert(await page.locator('#welcome').isVisible(), 'waiting does not import keys');
+      assert.doesNotMatch(await page.locator('#wallet').textContent(), /^0x/i, 'waiting does not import keys');
       await page.screenshot({ path: resolve(evidence, `waiting-${width}.png`), fullPage: true });
       assert.deepEqual(errors, []);
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'no horizontal overflow');

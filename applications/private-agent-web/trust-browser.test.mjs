@@ -64,11 +64,11 @@ try {
         'data: '+JSON.stringify({model,choices:[{delta:{content},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n'});
     });
     const cfg=await (await page.request.get(new URL('config.json',base).href)).json();
+    cfg.broker=cfg.broker.replace('/relay-broker-staging','/relay-broker');
     cfg.syncAnchorCodeHash=keccak256('0x6000');
     cfg.pageBundleRegistry={registry:await registry.getAddress(),rpcs:[new URL('/rpc/a',base).href,new URL('/rpc/b',base).href]};
     await page.route('**/config.json',route=>route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));
-    await ready(page); await page.locator('#start-fresh').click();
-    await page.waitForFunction(()=>!!document.querySelector('#chat-credit').dataset.remainingNanoUsd);
+    await ready(page);
     const dispatched = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/inference/chat'));
     await send(page,'Hello from the independently verified browser');
     await page.waitForFunction(()=>!document.querySelector('#verified').hidden, {timeout:30000});
@@ -97,11 +97,10 @@ try {
   for (const kind of ['nonce','key','model']) {
     const context=await browser.newContext({viewport:{width:390,height:900}}),page=await context.newPage();
     const calls=await backend(page,kind);
-    await ready(page); await page.locator('#start-fresh').click();
-    await page.waitForFunction(()=>!!document.querySelector('#chat-credit').dataset.remainingNanoUsd);
+    await ready(page);
     await send(page,'Refuse an unverified encryption key before transport');
     const pattern=kind==='nonce'?'nonce':kind==='key'?'differs from the attested':'names another model';
-    await page.waitForFunction(pattern=>new RegExp(pattern,'i').test(document.querySelector('#alert').textContent),pattern);
+    await page.waitForFunction(pattern=>[...document.querySelectorAll('#alert, .send-status')].some(e => new RegExp(pattern,'i').test(e.title)),pattern);
     assert(!calls.some(c=>c.path==='/inference/chat'));
     assert.equal(await page.locator('#verified').isVisible(),false);
     await page.screenshot({path:resolve(evidence,`refused-${kind}.png`),fullPage:true});

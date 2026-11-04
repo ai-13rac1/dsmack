@@ -10,58 +10,74 @@ export function referenceError(error, ref) {
 // Keep transport failures actionable without treating a model's partial text as
 // a completed answer. This object is saved with the native Pi assistant message.
 export function replyFailure(error, { partial = false, online = globalThis.navigator?.onLine } = {}) {
-  const detail = error?.message || String(error);
-  const code = error?.code || detail.match(/^([A-Z_]+):/)?.[1];
+  const original = error?.message || String(error);
+  const code = error?.code || original.match(/^([A-Z_]+):/)?.[1];
+  const detail = [original,
+    code && !original.includes(code) ? code : "",
+    error?.status ? `HTTP ${error.status}` : "",
+    error?.ref && !original.includes(`ref ${error.ref}`) ? `ref ${error.ref}` : "",
+  ].filter(Boolean).join(" · ");
   const interrupted = !!partial;
   let category, message, retryable = true;
-  if (/request.*abort|operation.*abort/i.test(detail)) {
+  if (/request.*abort|operation.*abort/i.test(original)) {
     category = "cancelled";
     message = "Reply cancelled. Send a message or Retry.";
-  } else if (/CREDIT_EXHAUSTED|(?:ARTIFACT_)?BUDGET_EXHAUSTED/.test(code || detail)) {
+  } else if (code === "STARTER_BUDGET_EXHAUSTED") {
+    category = "credit";
+    message = "Today's free credit is used up. Try again after 00:00 UTC, or add credit in Advanced → Add credit.";
+    retryable = false;
+  } else if (/CREDIT_EXHAUSTED|(?:ARTIFACT_)?BUDGET_EXHAUSTED/.test(code || original)) {
     category = "credit";
     message = /^(?:ARTIFACT_)?BUDGET_EXHAUSTED$/.test(code || "")
-      ? "ARTIFACT_BUDGET_EXHAUSTED: Artifact credit used up. Increase its allowed model budget before trying again."
-      : "CREDIT_EXHAUSTED: Chat credit used up. Check your chat credit before trying again.";
+      ? "This app's credit is used up. Increase its allowed model budget before trying again."
+      : "You're out of credit. Add credit in Advanced → Add credit.";
     retryable = false;
   } else if (code === "FLEET_BUSY" || code === "FLEET_EMPTY") {
     category = "capacity";
     message = code === "FLEET_BUSY"
       ? `All Macs are busy, retry in ${error.retryAfterSeconds || 15} seconds.`
       : "No Macs are connected right now. Try again shortly.";
-  } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY|Usage is unresolved/.test(code || detail)) {
+  } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY|Usage is unresolved/.test(code || original)) {
     category = "credit";
-    message = `${code || "USAGE_PENDING"}: ${/REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY/.test(code || "") ? "This message was already sent. " : ""}Chat credit is waiting for NEAR AI's metered usage. Use Reconcile provider usage, then Retry; another request cannot start until it settles.`;
+    message = "The last charge is still being confirmed. Try again in a minute.";
   } else if (/CREDIT_|ARTIFACT_BUDGET/.test(code || "")) {
     category = "credit";
-    message = `Chat credit request refused (${code}). Check your wallet and available credit before trying again.`;
+    message = "Couldn't use your credit. Check your wallet and available credit before trying again.";
     retryable = false;
+  } else if (/attest|verif|quote|(?:broker|signing|encryption) key|code hash|deployment pin|challenge mismatch|escrow code|measured|\bTDX\b|\bNRAS\b|\bMR(?:TD|SEAM|CONFIGID)\b/i.test(original)) {
+    category = "verification";
+    message = /model|NEAR/i.test(original)
+      ? "Couldn't verify the model, so nothing was sent. Retry, or reload the page."
+      : "Couldn't verify the sandbox, so nothing was sent. Retry, or reload the page.";
   } else if (online === false) {
     category = "offline";
     message = "Your browser is offline. Reconnect to the internet, then Retry.";
-  } else if (/\[api\.invalid_input\]|invalid_json/.test(detail)) {
+  } else if (/\[api\.invalid_input\]|invalid_json/.test(original)) {
     category = "provider";
-    message = `NEAR AI could not read the model request: ${detail} Send again. If it happens again, try another browser.`;
+    message = "The model couldn't read this request. Retry, or reload the page.";
   } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
     category = "provider";
-    message = `NEAR AI provider error${interrupted ? " interrupted this reply" : ""}. Wait a moment, then Retry.${code ? " (" + code + ")" : ""}`;
+    message = "NEAR AI couldn't finish this reply. Wait a moment, then Retry.";
   } else if (error?.status) {
     category = "broker";
-    message = `Broker returned HTTP ${error.status}${code ? " (" + code + ")" : ""}: ${detail} Retry.`;
-  } else if (code === "GUEST_DISCONNECTED" || /guest.*(?:closed|disconnect)|transport.*closed/i.test(detail)) {
+    message = error.status === 403
+      ? "The server refused this request. Retry, or reload the page."
+      : "The server couldn't complete this request. Retry, or reload the page.";
+  } else if (code === "GUEST_DISCONNECTED" || /guest.*(?:closed|disconnect)|transport.*closed/i.test(original)) {
     category = "guest";
-    message = "Mac guest disconnected. The command may have run; check the workspace before running it again.";
-  } else if (networkFailure(error) || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(detail)) {
+    message = "Lost the connection to the sandbox. The command may have run; check the workspace before running it again.";
+  } else if (networkFailure(error) || /network|fetch|connection|disconnect|transport|terminated|partial event|stream.*(ended|closed)|load failed/i.test(original)) {
     category = "browser";
     message = interrupted
-      ? "Connection lost mid-reply: your browser lost its connection, the tab was in the background, or the server restarted. The partial reply is kept. Retry"
-      : "Your browser lost its connection, or the tab was in the background. Return to the tab, check your connection, then Retry.";
+      ? "Connection lost mid-reply. The partial reply is kept. Check your connection, then Retry."
+      : "Your browser lost its connection. Check your connection, then Retry.";
   } else {
     category = "request";
-    message = `Model request refused: ${detail} Send again. If it happens again, try another browser.`;
+    message = code || /\b(?:HTTP|broker|ciphertext|nano-USD|CID)\b|\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b|\(ref /i.test(original)
+      ? "Couldn't complete this request. Retry, or reload the page."
+      : original;
   }
-  const ref = error?.ref;
-  if (typeof ref === "string" && /^[0-9a-f]{8}$/.test(ref) && !message.includes(`ref ${ref}`)) message += ` (ref ${ref})`;
-  return { category, message, retryable, interrupted };
+  return { category, message, retryable, interrupted, detail };
 }
 
 export function retryCandidate(messages) {
@@ -71,10 +87,10 @@ export function retryCandidate(messages) {
 }
 
 export function meteredReply(billing) {
-  if (!billing?.dispatched) return "The model request was not sent; no model charge.";
+  if (!billing?.dispatched) return "Not charged.";
   if (!billing.settled || billing.costUnknown || billing.costNanoUsd == null)
-    return "The broker's model charge is not yet confirmed. Retry checks the ledger first.";
-  return `Broker-metered ${billing.exactModelCost ? "model " : ""}charge: $${(Number(billing.costNanoUsd) / 1e9).toFixed(6)}. Retry is a new metered request.`;
+    return "The charge is still being confirmed. Retry checks it first.";
+  return `This attempt cost $${(Number(billing.costNanoUsd) / 1e9).toFixed(4)}. Retrying costs again.`;
 }
 
 export function settleInterruptedReply(reply, ledger) {

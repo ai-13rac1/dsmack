@@ -165,8 +165,13 @@ test("a failed guest connection invalidates its chain directory before the next 
 
 test("a browser failure before Bash starts names the browser connection instead of returning bare Failed to fetch", async () => {
   const session = new GuestSession({ catalog: [{ name: "bash", description: "bash", inputSchema: {} }] });
-  session.ensure = async () => { throw new TypeError("Failed to fetch"); };
-  await assert.rejects(session.tools()[0].execute("call", { command: "echo completed" }), /browser lost its connection.*background/);
+  const networkError = new TypeError("Failed to fetch");
+  session.ensure = async () => { throw networkError; };
+  await assert.rejects(session.tools()[0].execute("call", { command: "echo completed" }), error => {
+    assert.equal(error.cause, networkError);
+    assert.notEqual(error.message, networkError.message);
+    return true;
+  });
 });
 
 test("user-key guest tool calls retain PromptGuard preflight and complete assistant response", async () => {

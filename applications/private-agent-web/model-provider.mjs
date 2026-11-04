@@ -14,12 +14,15 @@ export function providerLabel(model) {
 }
 export function modelPrivacy(model) {
   return model.provider === "near"
-    ? "Model calls remain encrypted from the browser to the NEAR model TEE."
-    : `Model calls go directly from this browser to ${providerLabel(model)}, which sees the conversation. Model tokens use your provider key; guest seconds use chat credit.`;
+    ? "End-to-end encrypted to the model's secure hardware."
+    : `Model calls go directly from this browser to ${providerLabel(model)}, which sees the conversation. Model tokens use your provider key; sandbox time uses chat credit.`;
 }
 export function modelBadge(model) {
-  return model.provider === "near" ? model.id === "unavailable" ? "NEAR TEE model · unavailable" : model.id
-    : `${model.id} · ${providerLabel(model)} sees the conversation`;
+  if (model.provider !== "near")
+    return `${model.id} · ${providerLabel(model)} sees the conversation · paid with your provider key`;
+  const label = model.id === "unavailable" ? "Model unavailable"
+    : model.id.split("/").at(-1).replace(/-\d{4,8}$/, "").replaceAll("-", " ");
+  return `${label} via NEAR AI · paid from your Dsmack credit`;
 }
 export function directModel(provider, id, baseUrl) {
   if (!id.trim()) throw Error("Enter a model ID.");
@@ -72,9 +75,12 @@ export function providerStream({ near, preflight, systemPrompt, startedAt }) {
         ...context.messages.filter(message => message.role !== "system"),
       ] }, options);
     }, { onResult: answer => {
-      if (["error", "aborted"].includes(answer.stopReason)) answer.failure = replyFailure(
-        answer.stopReason === "aborted" ? new DOMException("Request aborted", "AbortError") : Error(answer.errorMessage),
-        { partial: answer.content.some(part => part.type === "text" && part.text) });
+      if (["error", "aborted"].includes(answer.stopReason)) {
+        answer.failure = replyFailure(
+          answer.stopReason === "aborted" ? new DOMException("Request aborted", "AbortError") : Error(answer.errorMessage),
+          { partial: answer.content.some(part => part.type === "text" && part.text) });
+        answer.errorMessage = answer.failure.message;
+      }
     } });
   };
 }

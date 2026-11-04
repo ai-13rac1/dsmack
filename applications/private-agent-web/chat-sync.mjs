@@ -28,7 +28,7 @@ export class ChatSync {
     await this.loadState();
     this.key=await crypto.subtle.importKey("raw",decode(this.keys.dk),"AES-GCM",false,["encrypt","decrypt"]);
     need(this.cfg.syncAnchor&&this.cfg.syncAnchorCodeHash,"Chat sync chain anchor is not configured.");
-    this.rpc=syncRpcProvider(this.cfg.rpc);
+    this.rpc=syncRpcProvider(this.cfg.rpc,{fetcher:(...args)=>fetch(...args)});
     need(Number(await this.rpc.send("eth_chainId",[]))===84532,"Chat sync RPC is not Base Sepolia.");
     need(keccak256(await this.rpc.getCode(this.cfg.syncAnchor))===this.cfg.syncAnchorCodeHash,"Chat sync anchor code differs from the deployment pin.");
     this.chain=new Contract(this.cfg.syncAnchor,["function heads(address) view returns(uint256 counter,bytes32 digest)"],this.rpc);

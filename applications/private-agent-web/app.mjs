@@ -3,7 +3,7 @@ import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
 import { renderToolProgress } from "./tool-renderers.mjs";
 import { AgentInterface } from "@pi-components/components/AgentInterface.js";
 import { SessionListDialog } from "@pi-components/dialogs/SessionListDialog.js";
-import { PersistentStorageDialog } from "@pi-components/dialogs/PersistentStorageDialog.js";
+import { UserMessage, AssistantMessage } from "@pi-components/components/Messages.js";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { createArtifacts, ARTIFACT_PROMPT } from "./artifacts.mjs";
 import { ArtifactGuests } from "./artifact-guests.mjs";
@@ -27,12 +27,12 @@ import {
   walletBody,
 } from "./credit.mjs";
 import { loadProvider, saveProvider, directModel, modelBadge, modelPrivacy, providerStream, checkProvider, anthropicModels, defaultAnthropicModel } from "./model-provider.mjs";
-import { brokerStream, PRIVACY } from "./inference.mjs";
+import { brokerStream } from "./inference.mjs";
 import { referenceError, replyFailure, retryCandidate, meteredReply, settleInterruptedReply, failOrphanedTools } from "./reply-recovery.mjs";
 import * as sandbox from "@sandbox";
 import approvedSandboxPolicy from "./sandbox-policy.json";
 import { monitorLabel } from "../egress-policy/monitor/registry.mjs";
-import { GuestSession, createGuestPeer } from "./agent-tools.mjs";
+import { GuestSession } from "./agent-tools.mjs";
 import { chainDirectoryCache } from "./chain-directory.mjs";
 import { readWithRetry, pause as waitForRead } from "./network-read.mjs";
 import { fetchDirectAttestation } from "./direct-attestation.mjs";
@@ -62,10 +62,43 @@ async function startupStep(name, task) {
   finally { performance.measure("startup:" + name, { start, end: performance.now() }); }
 }
 function error(e) {
-  const message = e.message || String(e);
-  $("alert").textContent = e.replyFailure?.message ||
-    (/network error|failed to fetch|load failed/i.test(message) ? replyFailure(e).message : message);
+  const failure = e.replyFailure || replyFailure(e);
+  $("alert").textContent = failure.message;
+  $("alert").title = failure.detail || e.message || String(e);
   $("alert").hidden = false;
+}
+let sendingMessage;
+function sendStatus(text, detail = "", stage = "") {
+  if (!sendingMessage) return;
+  sendingMessage.sendStatus = text;
+  sendingMessage.sendDetail = detail;
+  sendingMessage.sendStage = stage;
+  for (const view of chat.querySelectorAll("user-message")) view.requestUpdate();
+}
+function sendFailure(e) {
+  const failure = e.replyFailure || replyFailure(e);
+  if (sendingMessage) sendStatus(failure.message, failure.detail || e.message, "error");
+  else error(e);
+}
+// Pi renders usage per reply by default. Keep its message renderer and omit
+// that optional field only during rendering; the ledger and chat total retain it.
+const renderAssistant = AssistantMessage.prototype.render;
+AssistantMessage.prototype.render = function () {
+  const usage = this.message.usage;
+  this.message.usage = undefined;
+  try { return renderAssistant.call(this); }
+  finally { this.message.usage = usage; }
+};
+const renderUser = UserMessage.prototype.render;
+UserMessage.prototype.render = function () {
+  return html`${renderUser.call(this)}${this.message.sendStatus ? html`<p
+    id=${this.message === sendingMessage ? "send-status" : ""} class="send-status" role="status"
+    data-stage=${this.message.sendStage || ""} title=${this.message.sendDetail || ""}>${this.message.sendStatus}</p>` : ""}`;
+};
+function syncFailure(e) {
+  $("chat-status").hidden = false;
+  $("chat-status").textContent = "Couldn't sync this chat. It is saved here.";
+  $("chat-status").title = e.message;
 }
 function clearError() {
   $("alert").hidden = true;
@@ -145,9 +178,9 @@ async function api(path, body, opts = {}) {
   }
 }
 function render() {
-  $("wallet").textContent = credit.address || "Choose Start fresh or recover your wallet.";
+  $("wallet").textContent = credit.address || "Your wallet is created when you send your first message.";
   document.documentElement.dataset.walletLoaded = "true";
-  continuity?.update({ hasValue: BigInt(credit.chatCredit?.remainingNanoUsd || "0") > 0n || currentSession?.messages?.some(m => m.role === "user") || agent?.state.messages.some(m => m.role === "user") }).catch(error);
+  continuity?.update().catch(error);
   $("wallet-tools").hidden = !credit.address;
   renderChatCredit();
 }
@@ -156,13 +189,9 @@ function renderChatCredit() {
   $("chat-credit").dataset.remainingNanoUsd = c?.remainingNanoUsd || "";
   $("chat-credit").dataset.spentNanoUsd = c?.spentNanoUsd || "";
   $("chat-credit").textContent = c
-    ? "Chat credit " + formatNanoUsd(c.remainingNanoUsd)
-    : credit.address ? "Chat credit · Checking balance…" : "Chat credit · Choose how to begin";
-  $("chat-credit-status").textContent = c
-    ? `${c.usedTokens} tokens · ${c.spentNanoUsd} nano-USD charged${
-      c.pendingInferenceId ? " · Usage pending" : ""
-    }`
-    : credit.address ? "Your wallet is loaded. Checking your current credit…" : "Receive $0.250000 credit for model tokens and guest seconds. No testnet ETH needed.";
+    ? `$${(Number(c.remainingNanoUsd) / 1e9).toFixed(2)} credit`
+    : credit.address ? "Checking credit…" : "Credit on first send";
+  $("chat-credit-status").textContent = c?.pendingInferenceId ? "Usage pending" : "";
 }
 async function claimChatCredit() {
   require(
@@ -184,11 +213,19 @@ async function claimChatCredit() {
   if (guest) await guest.restore();
 }
 async function ensureWallet() {
-  require(credit.signer, "Choose Start fresh or recover your wallet before chatting.");
+  if (!credit.signer) {
+    await keys.create();
+    await credit.init();
+    currentSession.dsmack.wallet = credit.address.toLowerCase();
+    if (cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
+    currentSession.messages = agent.state.messages;
+    await saveCurrentChat();
+    if (!await loadSharedViewer()) await useSession(currentSession);
+    render();
+  }
   await claimChatCredit();
 }
 async function refreshServices() {
-  $("service").textContent = "Checking the broker…";
   await startupStep("broker-identity", () => credit.checkBroker(api));
   quote = await startupStep("inference-quote", () => api("/inference/quote"));
   require(
@@ -197,9 +234,6 @@ async function refreshServices() {
     "Broker does not offer browser-encrypted NEAR chat.",
   );
   setModel();
-  $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
-    ? "Chat ready · " + PRIVACY
-    : "Private inference is not configured.";
   if (credit.signer && (quote.configured || selectedModel)) await startupStep("wallet-credit", claimChatCredit);
   $("pins").textContent = JSON.stringify(
     {
@@ -213,6 +247,7 @@ async function refreshServices() {
     2,
   );
   render();
+  document.documentElement.dataset.servicesReady = "true";
 }
 async function usage() {
   require(credit.signer, "Create or connect a wallet first.");
@@ -237,10 +272,10 @@ async function usage() {
     } catch (e) {
       if (!e.message.startsWith("USAGE_PENDING:")) throw e;
       $("chat-credit-status").textContent =
-        "Provider usage pending · Checking the reported charge…";
+        "Usage pending";
       if (attempt === 29) {
         throw new Error(
-          "USAGE_PENDING: Provider cost is still pending. Use Reconcile provider usage before another message.",
+          "USAGE_PENDING: The last charge is still being confirmed. Try again in a minute.",
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -268,8 +303,6 @@ function setModel() {
   };
   $("model").textContent = modelBadge(agent.state.model);
   $("model-privacy").textContent = modelPrivacy(agent.state.model);
-  if (quote) $("service").textContent = selectedModel ? "Chat ready · " + modelPrivacy(selectedModel) : quote.configured
-    ? "Chat ready · " + PRIVACY : "Private inference is not configured.";
   $("verified").hidden = !!selectedModel || !currentSession.dsmack.evidence.some(e =>
     e.model === agent.state.model.id && e.browser?.fullQuoteVerifiedBy === "browser");
   chat?.requestUpdate();
@@ -277,16 +310,14 @@ function setModel() {
 async function saveCurrentChat(publish = false) {
   const session = currentSession;
   chat.dataset.saved = "false";
-  $("chat-status").textContent = "Saving chat…";
   const task = persistSession(session, agent);
   lastSave = task;
   try {
     const data = await task;
     if (currentSession === session) {
-      $("session-title").textContent = data.title;
-      $("chat-status").textContent = "Saved on this device";
+      $("session-title").textContent = data.messages.some(m => m.role === "user") ? data.title : "";
       chat.dataset.saved = "true";
-      continuity?.update({ hasValue: data.messages.some(m => m.role === "user") || BigInt(credit.chatCredit?.remainingNanoUsd || "0") > 0n }).catch(error);
+      continuity?.update().catch(error);
     }
     if (publish && sync) {
       try {
@@ -294,15 +325,15 @@ async function saveCurrentChat(publish = false) {
         await sync.push(data.id);
         if (currentSession === session) {
           chat.dataset.synced = "true";
-          $("chat-status").textContent = "Encrypted and synced";
+          $("chat-status").hidden = true;
         }
       } catch (e) {
-        $("chat-status").textContent = "Saved on this device · Sync pending: " + e.message;
-        if ($("alert").hidden) error(e);
+        syncFailure(e);
       }
     }
   } catch (e) {
-    $("chat-status").textContent = "Chat could not be saved";
+    $("chat-status").hidden = false;
+    $("chat-status").textContent = "Couldn’t save this chat. Check your browser storage.";
     error(e);
     throw e;
   }
@@ -328,6 +359,7 @@ function renderReplyRecovery() {
   if (!reply) return;
   panel.dataset.category = reply.failure.category;
   $("reply-recovery-message").textContent = reply.failure.message;
+  $("reply-recovery-message").title = reply.failure.detail || "";
   $("reply-recovery-charge").textContent = reply.provider === "near" ? meteredReply(reply.billing) : "Model tokens are billed by your provider. Guest seconds use chat credit.";
   $("retry-reply").disabled = chatBusy || agent.state.isStreaming;
 }
@@ -338,7 +370,7 @@ async function retryReply() {
   clearError();
   try {
     if (reply.provider === "near") {
-      $("reply-recovery-charge").textContent = "Checking the broker's metered charge before retrying…";
+      $("reply-recovery-charge").textContent = "Checking the last charge before retrying…";
       const ledger = await usage();
       require(!ledger.pendingInferenceId, "USAGE_PENDING: Provider cost is still pending.");
       if (settleInterruptedReply(reply, ledger)) await saveCurrentChat();
@@ -358,11 +390,6 @@ async function retryReply() {
     setChatBusy(false);
     chat.requestUpdate();
   }
-}
-async function renderPersistence() {
-  const persisted = await navigator.storage?.persisted?.();
-  $("storage-status").textContent = persisted
-    ? "Persistent storage enabled" : "Standard browser storage";
 }
 const guestIndexKey = wallet => `artifact-guest-pending:${wallet.toLowerCase()}`;
 let guestCard;
@@ -454,6 +481,13 @@ async function useSession(data) {
     id: crypto.randomUUID(), title: "New chat", createdAt: new Date().toISOString(),
     messages: [], dsmack: { evidence: [], wallet: credit.address?.toLowerCase() },
   };
+  for (const message of currentSession.messages) {
+    if (message !== sendingMessage && message.sendStage !== "error") {
+      delete message.sendStatus;
+      delete message.sendStage;
+      delete message.sendDetail;
+    }
+  }
   const conversationId = currentSession.id;
   const sessionRecord = currentSession;
   guest = guests.get(conversationId);
@@ -577,7 +611,7 @@ async function useSession(data) {
     toolExecution: "sequential",
     getApiKey: provider => provider === "near" ? undefined : storage.providerKeys.get(provider),
     streamFn: providerStream({ preflight, systemPrompt, startedAt: currentSession.createdAt, near: brokerStream({
-      credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error,
+      credit, api, cfg, quote: () => quote, evidence: addEvidence, usage, error: sendFailure, status: sendStatus,
       billingUpdated: async answer => {
         const reply = artifactAgent.state.messages.findLast(message => message.role === "assistant" &&
           message.billing?.sessionId === answer.billing.sessionId);
@@ -602,7 +636,7 @@ async function useSession(data) {
     $("open-artifacts").hidden = !artifacts.panel.artifacts.size;
     if (imported.length) { artifactHost.hidden = false; artifacts.panel.openArtifact("shared.html"); }
   }
-  failOrphanedTools(agent.state.messages, "Guest connection ended before a tool result was received. Execution was not retried.");
+  failOrphanedTools(agent.state.messages, "Lost the connection to the sandbox before this command finished. It was not run again.");
   guest.record = { session: currentSession, agent };
   if (keys.bundle && credit.signer) await recoverArtifactGuests();
   if (credit.signer) {
@@ -626,6 +660,7 @@ async function useSession(data) {
     if (firstPartial && event.type === "message_update" && event.message.role === "assistant" &&
       event.message.content.some(part => part.type === "text" && part.text)) {
       firstPartial = false;
+      sendStatus("");
       // Pi 0.75's clear-before-stream flag drops its first batched partial. Core
       // 1.4 keeps it in streamingMessage until message_end. Show the first text
       // immediately in Pi's component, leaving later deltas to native batching.
@@ -635,6 +670,10 @@ async function useSession(data) {
     }
     // Pi's message list observes array references; the agent appends in place.
     if (event.type === "message_end") {
+      if (event.message.role === "assistant") {
+        if (event.message.failure) sendStatus(event.message.failure.message, event.message.failure.detail, "error");
+        else sendStatus("");
+      }
       agent.state.messages = [...agent.state.messages];
       chat.requestUpdate();
       renderReplyRecovery();
@@ -642,7 +681,7 @@ async function useSession(data) {
     if (event.type === "agent_end") {
       failOrphanedTools(agent.state.messages, signal.aborted
         ? "Cancelled before a tool result was received. Execution was not retried."
-        : "Guest connection ended before a tool result was received. Execution was not retried.");
+        : "Lost the connection to the sandbox before this command finished. It was not run again.");
       agent.state.messages = [...agent.state.messages];
     }
     // Core 1.4 awaits listeners before becoming idle. Remote sync must not
@@ -706,7 +745,11 @@ function initProviderSettings() {
       setModel();
       await saveCurrentChat();
       dialog.close();
-    } catch (e) { $("provider-error").textContent = e.message; }
+    } catch (e) {
+      const failure = replyFailure(e);
+      $("provider-error").textContent = failure.message;
+      $("provider-error").title = failure.detail;
+    }
     finally { $("provider-save").disabled = false; $("provider-cancel").disabled = false; }
   };
 }
@@ -758,42 +801,54 @@ async function initChat() {
   chat.onApiKeyRequired = async () => true;
   chat.onBeforeSend = async () => {
     clearError();
+    sendStatus("Checking credit…", "", "credit");
     await credit.checkBroker(api);
     if (!selectedModel) require(quote?.configured, "Private inference is not configured on this broker.");
     await ensureWallet();
     if (!selectedModel) {
       if (credit.chatCredit.pendingInferenceId) await usage();
       require(!credit.chatCredit.pendingInferenceId,
-        "Usage is unresolved. Reconcile provider usage before sending another message.");
+        "USAGE_PENDING: The last charge is still being confirmed. Try again in a minute.");
       require(BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
         "CREDIT_EXHAUSTED: Chat credit used up.");
     }
     if (!await storage.settings.get("chat.persistenceRequested")) {
       await storage.requestPersistence();
       await storage.settings.set("chat.persistenceRequested", true);
-      await renderPersistence();
     }
   };
-  const sendMessage = chat.sendMessage.bind(chat);
-  chat.sendMessage = async (...args) => {
-    if (chatBusy) return;
+  chat.sendMessage = async input => {
+    if (!input.trim() || chatBusy || agent.state.isStreaming) return;
     setChatBusy(true);
-    try { await sendMessage(...args); } catch (e) {
-      const failure = replyFailure(e);
-      error(Object.assign(new Error(failure.message), { replyFailure: failure }));
-    }
+    sendingMessage = { role: "user", content: input, timestamp: Date.now(), sendStatus: "Checking credit…", sendStage: "credit" };
+    agent.state.messages = [...agent.state.messages, sendingMessage];
+    const editor = chat.querySelector("message-editor");
+    editor.value = "";
+    chat.requestUpdate();
+    try {
+      // Render the accepted message before the first asynchronous credit check.
+      await chat.updateComplete;
+      await chat.querySelector("message-list").updateComplete;
+      chat.querySelector("user-message:last-of-type")?.scrollIntoView({ block: "nearest" });
+      await chat.onBeforeSend();
+      await agent.prompt([]);
+    } catch (e) { sendFailure(e); }
     finally {
+      await saveCurrentChat().catch(error);
+      sendingMessage = undefined;
       setChatBusy(false);
-      // The agent becomes idle after its final event listeners have settled.
       chat.requestUpdate();
     }
   };
-  chat.onCostClick = () => usage().catch(error);
+  chat.renderStats = () => {
+    const total = (agent?.state.messages || []).reduce((sum, message) =>
+      sum + (message.role === "assistant" ? message.usage?.cost?.total || 0 : 0), 0);
+    return html`<div class="text-xs text-muted-foreground text-right h-5">$${total.toFixed(4)} used this chat</div>`;
+  };
   const active = await storage.settings.get("chat.active") || await storage.sessions.getLatestSessionId();
   const saved = active ? await storage.sessions.get(active) : null;
   const sameWallet = credit.address && (!saved?.dsmack?.wallet || saved.dsmack.wallet === credit.address.toLowerCase());
   if (!await loadSharedViewer()) await useSession(sameWallet ? saved : null);
-  await renderPersistence();
   action("new-chat", () => useSession());
   action("sessions", async () => {
     const dialog = new SessionListDialog();
@@ -820,10 +875,6 @@ async function initChat() {
     </div>${content()}`;
     dialog.open();
     await dialog.loadSessions();
-  });
-  action("save-storage", async () => {
-    await PersistentStorageDialog.request();
-    await renderPersistence();
   });
 }
 
@@ -1066,12 +1117,12 @@ function measuredEnvironment() {
 function renderGuest(status) {
   const held = ["held", "connecting", "reconnecting", "disconnected-held", "handover"].includes(status.state);
   $("end-session").disabled = !held;
-  $("download").disabled = status.state !== "held";
-  $("save-workspace").disabled = status.state !== "held";
   $("repo").disabled = held;
+  $("repo").title = held ? "Stop the sandbox to attach different code" : "";
   $("guest-seconds").textContent = `${status.guestSeconds || 0} guest seconds`;
   $("guest-status").dataset.state = status.state;
-  $("guest-status").textContent = status.error || ({
+  $("guest-status").title = status.error || "";
+  $("guest-status").textContent = status.error ? replyFailure(Error(status.error)).message : ({
     idle: "Guest starts when the agent first uses a tool.",
     verifying: "Verifying an available guest…",
     connecting: "Connecting to the verified guest…",
@@ -1102,7 +1153,7 @@ function renderWorkspace(status) {
 }
 function emptyRepository() {
   repoFiles = new Map();
-  $("repository-status").textContent = "Attach a .tar or .tar.gz of UTF-8 files before the first tool call.";
+  $("repository-status").textContent = "";
 }
 async function readRepository(file) {
   require(file?.size <= 16 * 1024 * 1024, "Repository exceeds the 16 MiB input limit.");
@@ -1138,9 +1189,8 @@ async function refund() {
   $("prepaid-status").textContent = await credit.closeAccount();
 }
 async function checkSync() {
-  if (!sync) { $("sync-status").textContent = keys.bundle ? "Chats save on this device." : "Choose how to begin. Chats save on this device."; return; }
+  if (!sync) return;
   const checking = sync;
-  $("sync-status").textContent = "Checking sync… Your saved chats are ready on this device.";
   try {
     await startupStep("sync-pull", () => checking.pull());
     // A recovered wallet may need to select its newest verified remote chat.
@@ -1155,10 +1205,9 @@ async function checkSync() {
       if (imported && latest) await store("continuity.imported", false);
     }
     await startupStep("sync-flush", () => checking.flush());
-    $("sync-status").textContent = "Chats checked and synced.";
+    $("chat-status").hidden = true;
   } catch (e) {
-    $("sync-status").textContent = "Chats are saved here. Sync couldn’t finish; check your connection and try again.";
-    $("sync-status").title = e.message;
+    syncFailure(e);
   }
 }
 async function main() {
@@ -1186,7 +1235,7 @@ async function main() {
   cfg.sandboxPolicy = { ...approvedSandboxPolicy, registry: cfg.registry, rpc: cfg.rpc };
   require(cfg.chainId === 84532, "This page is restricted to Base Sepolia.");
   keys = await startupStep("local-wallet", () => new DeviceKeys().init());
-  $("wallet").textContent = keys.address || "Choose Start fresh or recover your wallet.";
+  $("wallet").textContent = keys.address || "Your wallet is created when you send your first message.";
   document.documentElement.dataset.walletLoaded = "true";
   let client = await startupStep("local-client", () => store("client"));
   if (!client) {
@@ -1206,20 +1255,7 @@ async function main() {
   render();
   await startupStep("local-chat", initChat);
   render();
-  action("start-fresh", async () => {
-    await keys.create();
-    await credit.init();
-    currentSession.dsmack.wallet = credit.address.toLowerCase();
-    if (cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
-    if (!await loadSharedViewer()) await useSession(currentSession);
-    render();
-    $("welcome").hidden = true;
-    $("service").textContent = "Your wallet is ready. Checking your credit…";
-    refreshServices().catch(error);
-    checkSync().catch(error);
-  });
-  $("start-fresh").disabled = false;
-  $("used-before").disabled = false;
+  $("recover-device").disabled = false;
   action("copy-address", async () => {
     require(credit.address, "Create or connect a wallet first.");
     await navigator.clipboard.writeText(credit.address);
@@ -1233,41 +1269,17 @@ async function main() {
   });
   action("deposit", async () => {
     await credit.deposit($("deposit-amount").value.trim());
-    $("prepaid-status").textContent = "USDC deposited. Refresh credit after chain finality.";
+    $("prepaid-status").textContent = "USDC deposited. Checking credit…";
+    await claimChatCredit();
+    $("prepaid-status").textContent = "USDC deposited.";
   });
-  action("refresh", refreshServices);
-  action("reconcile", () => usage());
   action("refund", refund);
   action("verified", async () => { $("advanced").open = true; $("attestations").scrollIntoView({ block: "nearest" }); });
-  action("discover", async () => {
-    const peer = await createGuestPeer();
-    try { await discover({ peer }); }
-    finally { await peer.stop(); }
-  });
   action("end-session", () => guest.end());
-  action("save-workspace", () => guest.save());
-  action("download", async () => {
-    const patch = await guest.patch();
-    const url = URL.createObjectURL(new Blob([patch], { type: "text/x-diff" })),
-      a = document.createElement("a");
-    a.href = url;
-    a.download = "private-agent.patch";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
-  $("policy").onchange = async (event) => {
-    try {
-      loadPolicy(JSON.parse(await event.target.files[0].text()));
-    } catch (e) {
-      policy = undefined;
-      node = undefined;
-      error(e);
-    }
-  };
   $("repo").onchange = async (event) => {
     try {
       repoFiles = await readRepository(event.target.files[0]);
-      $("repository-status").textContent = `${repoFiles.size} repository files selected. Ask for a change in chat.`;
+      $("repository-status").textContent = `${repoFiles.size} files attached`;
     } catch (e) {
       emptyRepository();
       error(e);

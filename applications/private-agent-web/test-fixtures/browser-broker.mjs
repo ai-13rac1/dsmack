@@ -23,11 +23,12 @@ export async function backend(page, kind) {
   await replayNear(page);
   const cfg = await (await page.request.get(new URL("config.json", base).href))
     .json();
+  cfg.broker = cfg.broker.replace("/relay-broker-staging", "/relay-broker");
   if (kind === "ux") cfg.broker = new URL("/relay-broker", base).href;
   cfg.syncAnchor = "0x" + "11".repeat(20);
   cfg.syncAnchorCodeHash = keccak256("0x6000");
   await page.route("**/config.json", route => route.fulfill({headers:publicHeaders,body:JSON.stringify(cfg)}));
-  await page.route(cfg.rpc, route => {
+  await page.route(new URL(cfg.rpc).href, route => {
     const raw = route.request().postDataJSON();
     const reply = r => ({jsonrpc:"2.0",id:r.id,result:r.method==="eth_chainId"?"0x14a34":r.method==="eth_getCode"?"0x6000":"0x"+"0".repeat(128)});
     return route.fulfill({headers:publicHeaders,body:JSON.stringify(Array.isArray(raw)?raw.map(reply):reply(raw))});
@@ -146,7 +147,7 @@ export async function ready(page) {
     document.documentElement.dataset.ready === "true"
   );
   await page.waitForFunction(() =>
-    document.querySelector("#service").textContent.startsWith("Chat ready")
+    document.documentElement.dataset.servicesReady === "true"
   );
 }
 export async function send(page, text) {

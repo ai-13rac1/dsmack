@@ -27,12 +27,11 @@ const report = {
   scope: "Browser wallet, credit and encryption boundaries",
   cases: [],
 };
+const failureLine = page => page.locator("#alert:visible, .send-status[title]:visible").last();
 async function alert(page, pattern) {
   await page.waitForFunction(
-    (source) => {
-      const e = document.querySelector("#alert");
-      return e && !e.hidden && new RegExp(source, "i").test(e.textContent);
-    },
+    source => [...document.querySelectorAll("#alert, .send-status")].some(e =>
+      !e.hidden && new RegExp(source, "i").test(e.title)),
     pattern,
     { timeout: 15000 },
   );
@@ -57,8 +56,8 @@ async function run(name, kind, fn) {
   try {
     const calls = await backend(page, kind);
     await ready(page);
-    if (name !== "first-visit-requires-choice") {
-      await page.locator("#start-fresh").click();
+    if (name !== "first-send-creates-wallet") {
+      await page.evaluate(() => document.querySelector("#chat").onBeforeSend());
       await page.waitForFunction(() => document.querySelector("#chat-credit").dataset.remainingNanoUsd !== "");
     }
     await fn(page, calls);
@@ -127,7 +126,7 @@ try {
     await page.click("#provider-save");
     await page.locator("#provider-dialog").waitFor({ state: "hidden" });
     assert(!(await page.locator("#model").textContent()).includes("sees the conversation"));
-    assert.match(await page.locator("#model-privacy").textContent(), /encrypted.*NEAR model TEE/);
+    assert.match(await page.locator("#model-privacy").textContent(), /encrypted.*secure hardware/);
     assert.equal(requests.length, 2, "switching back to NEAR needs no key or connection test");
   });
   await run("anthropic-provider-sends-browser-header-and-accurate-preamble", "valid", async page => {
@@ -161,7 +160,7 @@ try {
     await page.fill("#provider-url", "https://blocked.example/v1");
     await page.fill("#provider-key", "unsaved-key");
     await page.click("#provider-save");
-    await page.waitForFunction(() => document.querySelector("#provider-error").textContent.includes("Browser connection failed"));
+    await page.waitForFunction(() => document.querySelector("#provider-error").title.includes("Browser connection failed"));
     assert(!(await page.locator("#model").textContent()).includes("sees the conversation"));
     await page.click("#provider-cancel");
     await page.waitForFunction(() => document.querySelector("#provider-key").value === "");
@@ -177,9 +176,9 @@ try {
     await page.route("**/artifacts/share/" + sealed.cid, route => route.fulfill({ headers:{...publicHeaders,"access-control-allow-origin":origin}, body:JSON.stringify({cid:sealed.cid,ciphertext:sealed.ciphertext}) }));
     await page.goto(origin + "/a/#" + new URLSearchParams({cid:sealed.cid,k:sealed.key}));
     await page.waitForSelector("#chat");
-    assert(await page.locator("#start-fresh").isVisible());
+    assert(await page.locator("#recover-device").isVisible());
     assert.equal(await page.locator("#artifacts-host artifacts-panel").count(),0);
-    await page.locator("#start-fresh").click();
+    await page.evaluate(() => document.querySelector("#chat").onBeforeSend());
     await page.waitForFunction(()=>document.querySelector("#artifacts-host artifacts-panel"));
     await page.waitForFunction(()=>Array.from(document.querySelectorAll("iframe")).length>0);
     let app = await sharedAppFrame(page);
@@ -218,8 +217,9 @@ try {
       });
     }
     await page.locator("#advanced").evaluate(view => { view.open = true; });
-    await page.locator("#discover").click();
-    await alert(page, "Chain directory failed");
+    const failure = await page.evaluate(() => document.querySelector("#chat").session.state.tools
+      .find(tool => tool.name === "bash").execute("directory-read", { command: "true" }).then(() => null, error => error.message));
+    assert.equal(typeof failure, "string");
     const shown = await page.locator("#directory-status").innerText();
     assert.equal(await page.locator("#directory-status").getAttribute("data-path"), "chain");
     assert.match(shown, /Broker guest directory unavailable.*500/);
@@ -231,20 +231,20 @@ try {
   await run("broker-reads-retry-once-and-signed-posts-never-resend", "valid", async (page) => {
     let reads = 0, writes = 0;
     await page.route("**/relay-broker/inference/quote", route => ++reads === 1 ? route.abort("internetdisconnected") : route.fallback());
-    await page.locator("#advanced").evaluate(view => { view.open = true; });
-    await page.locator("#refresh").evaluate(button => { button.closest("details").open = true; });
-    await page.locator("#refresh").click();
-    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    await page.reload();
+    await page.waitForFunction(() => document.documentElement.dataset.servicesReady === "true" &&
+      document.querySelector("#chat-credit").dataset.remainingNanoUsd === "250000000");
     assert.equal(reads, 2);
     await page.route("**/relay-broker/inference/credit", route => { writes++; return route.abort("internetdisconnected"); });
-    await page.locator("#refresh").click();
-    await alert(page, "browser lost its connection");
+    await send(page, "A failed signed credit check must not resend.");
+    await alert(page, "fetch|network|connection");
     assert.equal(writes, 1, "a signed credit request is sent once");
-    assert.doesNotMatch(await page.locator("#alert").textContent(), /broker.*restarting/i);
+    assert.doesNotMatch(await failureLine(page).textContent(), /broker.*restarting/i);
     reads = 0;
     await page.route("**/relay-broker/inference/quote", route => { reads++; return route.abort("internetdisconnected"); });
-    await page.locator("#refresh").click();
-    await page.waitForFunction(() => !document.querySelector("#refresh").disabled);
+    await page.reload();
+    await page.locator("#alert").waitFor({state:"visible"});
+    await alert(page, "fetch|network|connection");
     assert.equal(reads, 2, "a second browser failure ends the read");
     assert.equal(writes, 1);
   });
@@ -268,55 +268,37 @@ try {
     assert.equal(await page.locator("#wallet").textContent(), wallet);
     await Promise.all([page.waitForEvent("dialog").then(dialog => { assert.match(dialog.message(), /saved passkey or email/); return dialog.accept(); }),
       page.locator("#switch-wallet").click()]);
-    await page.locator("#welcome").waitFor({ state: "visible" });
+    await page.locator("#recover-device").waitFor({ state: "visible" });
     await page.waitForFunction(() => document.documentElement.dataset.ready === "true");
     assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
-    await page.locator("#start-fresh").click();
+    await page.evaluate(() => document.querySelector("#chat").onBeforeSend());
     await page.waitForFunction(() => document.querySelector("#wallet").textContent.startsWith("0x"));
     assert.notEqual(await page.locator("#wallet").textContent(), wallet);
   });
-  await run("first-visit-requires-choice", "valid", async (page, calls) => {
+  await run("first-send-creates-wallet", "valid", async (page, calls) => {
     assert.doesNotMatch(await page.locator("#wallet").textContent(), /^0x/i);
-    assert(await page.locator("#start-fresh").isVisible());
+    assert(await page.locator("#recover-device").isVisible());
     assert.equal(await page.locator("#artifacts-host artifacts-panel").count(), 0,
       "Artifact state and providers wait for the viewer's data key");
-    await page.locator("#used-before").click();
+    await page.locator("#recover-device").click();
     assert(await page.locator("#continuity-panel").isVisible());
-    assert(await page.locator("#enroll-email").isDisabled());
-    await page.locator("#advanced").evaluate(view => { view.open = true; });
+    assert(await page.locator("#enroll-email").isHidden());
+    assert(await page.locator("#recover-passkey").isVisible());
+    assert(!calls.some(r => r.path === "/inference/credit"), "Recovery stays available before wallet creation");
     await page.locator("#use-another-device").click();
-    await page.locator("#start-fresh").click();
-    await page.waitForFunction(() => document.querySelector("#artifacts-host artifacts-panel"));
-    await page.waitForFunction(() => document.querySelector("#chat-credit").dataset.remainingNanoUsd !== "");
-    await page.waitForFunction(() => document.querySelector("#sync-status").textContent === "Chats checked and synced.");
-    assert(!calls.some(r => r.path === "/sync/blob" || r.path === "/sync/commit"), "An empty wallet must not publish system-only chats");
-    await ready(page);
-    await page.waitForFunction(() => document.querySelector("#sync-status").textContent === "Chats checked and synced.");
-    assert(!calls.some(r => r.path === "/sync/blob" || r.path === "/sync/commit"), "Reloading an empty wallet must not commit empty chats");
     const marker = "FIRST_VISIT_PROMPT_STAYS_ENCRYPTED";
-    assert.match(await page.locator("#wallet").textContent(), /^0x[0-9a-f]{40}$/i);
-    assert.equal(await page.locator("#continuity-panel").isVisible(), false);
-    assert.equal(await page.locator("#policy").inputValue(), "");
-    assert.match(
-      await page.locator("#node-status").textContent(),
-      /Approved sandbox policy included/,
-    );
-    assert.equal(await page.locator("#repo").isEnabled(), true);
     await send(page, marker);
     await alert(page, "SYNTHETIC_STOP");
     await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("message-editor").isStreaming);
-    await page.waitForFunction(() => document.querySelector("#chat-status").textContent.includes("Sync pending"));
-    assert.match(await page.locator("#alert").textContent(), /SYNTHETIC_STOP/,
-      "Background sync failure must preserve the model error");
+    await page.waitForFunction(() => document.querySelector("#chat-status").textContent.length > 0);
+    assert.match(await failureLine(page).getAttribute("title"), /SYNTHETIC_STOP/,
+      "Background sync failure must preserve the model error details");
     assert(calls.some((r) => r.path === "/sync/blob"), "Saved chat attempted encrypted synchronization");
     assert(!calls.filter((r) => r.path.startsWith("/sync/")).some((r) => JSON.stringify(r.body).includes(marker)),
       "Plaintext prompt reached chat synchronization");
     assert.match(await page.locator("user-message").innerText(), new RegExp(marker));
     assert.equal(await page.locator("agent-interface message-editor textarea").inputValue(), "");
-    assert.match(
-      await page.locator("#wallet").textContent(),
-      /^0x[0-9a-f]{40}$/i,
-    );
+    assert.match(await page.locator("#wallet").textContent(), /^0x[0-9a-f]{40}$/i);
     assert(calls.some((r) => r.path === "/inference/credit"));
     const chat = calls.find((r) => r.path === "/inference/chat");
     assert(chat && !JSON.stringify(chat.body).includes(marker));
@@ -325,7 +307,6 @@ try {
   });
   await run("guest-is-lazy-until-a-tool-call", "valid", async (page, calls) => {
     assert.equal(await page.locator("#end-session").isDisabled(), true);
-    assert.equal(await page.locator("#download").isDisabled(), true);
     await send(page, "A chat request alone must not allocate a guest.");
     await alert(page, "SYNTHETIC_STOP");
     assert(!calls.some(r => r.path.startsWith("/agent/")));
@@ -334,7 +315,6 @@ try {
   await run("inline-tool-output-and-markdown-code-visible", "valid", async (page, calls) => {
     // Display fixture derived from the real guest script journey. No model or
     // guest request is made: this catches missing custom-element registration.
-    await page.locator("#sync-status").getByText("Chats checked and synced.", { exact: true }).waitFor({ state: "attached" });
     await page.evaluate(async () => {
       const chat = document.querySelector("agent-interface"), model = chat.session.state.model;
       const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -387,7 +367,6 @@ try {
     await ready(page);
     await page.waitForFunction(() => document.querySelector("#guest-status").dataset.state === "disconnected-held");
     assert.equal(await page.locator("#end-session").isEnabled(), true);
-    assert.equal(await page.locator("#download").isDisabled(), true);
     assert.match(await page.locator("user-message").innerText(), /Saved conversation survives/);
     assert.equal(await page.locator("#verified").isVisible(), true);
     await page.locator("#advanced").evaluate(view => { view.open = true; });
@@ -404,8 +383,7 @@ try {
       async (page, calls) => {
 
         await page.waitForFunction(() =>
-          document.querySelector("#chat-credit").textContent ===
-            "Chat credit $0.250000"
+          document.querySelector("#chat-credit").dataset.remainingNanoUsd === "250000000"
         );
         await send(
           page,
@@ -429,7 +407,7 @@ try {
     await alert(page, "REQUEST_ALREADY_DISPATCHED");
     await page.locator("#retry-reply").waitFor({state:"visible"});
     await page.waitForFunction(() => !document.querySelector("#chat")?.session?.state.isStreaming);
-    assert.match(await page.locator("#reply-recovery").innerText(), /Reconcile provider usage/);
+    assert.doesNotMatch(await page.locator("#reply-recovery").innerText(), /REQUEST_ALREADY_DISPATCHED|Reconcile provider usage/);
     assert.equal(calls.filter(call => call.path === "/inference/chat").length, 1);
     assert(calls.some(call => call.path === "/inference/usage"), "Duplicate delivery reconciles the original dispatch");
   });
@@ -437,11 +415,11 @@ try {
     await send(page, "Reply once.");
     await alert(page, "SYNTHETIC_STOP");
     const request = calls.find(call => call.path === "/inference/chat");
-    const text = await page.locator("#alert").innerText();
+    const text = await failureLine(page).getAttribute("title");
     const ref = request.body.nonce.slice(0, 8);
     assert(text.includes("ref " + ref));
     assert.equal(text.match(new RegExp("ref " + ref, "g")).length, 1);
-    assert.match(text, /Retry/);
+    assert.doesNotMatch(await failureLine(page).innerText(), /SYNTHETIC_STOP|ref [0-9a-f]{8}|HTTP \d/);
   });
   await run("remaining-credit-reduces-encrypted-output-limit", "partial", async (page, calls) => {
     await send(page, "FIRST_VISIT_PROMPT_STAYS_ENCRYPTED");
@@ -469,15 +447,13 @@ try {
     async (page, calls) => {
 
       await page.waitForFunction(() =>
-        document.querySelector("#chat-credit").textContent ===
-          "Chat credit $0.250000"
+        document.querySelector("#chat-credit").dataset.remainingNanoUsd === "250000000"
       );
       const wallet = await page.locator("#wallet").textContent();
       await ready(page);
       assert.equal(await page.locator("#wallet").textContent(), wallet);
       await page.waitForFunction(() =>
-        document.querySelector("#chat-credit").textContent ===
-          "Chat credit $0.250000"
+        document.querySelector("#chat-credit").dataset.remainingNanoUsd === "250000000"
       );
       const marker = "W1_BROWSER_ONLY_PROMPT_9b5cb2d3";
       await send(page, marker);

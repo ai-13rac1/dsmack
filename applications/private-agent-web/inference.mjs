@@ -53,7 +53,7 @@ export function withInferenceWallet(credit, operation) {
 }
 
 export function brokerStream(
-  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt, preflight, billingUpdated },
+  { credit, api, cfg, quote, evidence, usage, error, startedAt, systemPrompt, preflight, billingUpdated, status },
 ) {
   const conversationStarted = new Date(startedAt);
   return (model, context, options = {}) => {
@@ -129,6 +129,7 @@ export function brokerStream(
           q?.configured,
           "Private inference is not configured on this broker.",
         );
+        status?.("Checking credit…", "", "credit");
         await credit.checkBroker(api);
         await options.beforePrepare?.();
         require(
@@ -137,7 +138,7 @@ export function brokerStream(
         );
         require(
           !credit.chatCredit.pendingInferenceId,
-          "Usage is unresolved. Reconcile provider usage before sending another message.",
+          "USAGE_PENDING: The last charge is still being confirmed. Try again in a minute.",
         );
         require(
           BigInt(credit.chatCredit.remainingNanoUsd) > 0n,
@@ -149,6 +150,7 @@ export function brokerStream(
           crypto.getRandomValues(new Uint8Array(32)),
           (b) => b.toString(16).padStart(2, "0"),
         ).join("");
+        status?.("Verifying the model…", "", "verify");
         session = await api(
           "/inference/prepare",
           await walletBody(credit, "prepare", { attestationNonce,
@@ -257,6 +259,7 @@ export function brokerStream(
         billing.dispatched = true;
         options.signal?.addEventListener("abort", cancelled, { once: true });
         credit.chatCredit.pendingInferenceId = "awaiting-provider-response";
+        status?.("Waiting for reply…", "", "reply");
         const response = await api("/inference/chat", signed, {
           stream: true,
           signal: options.signal,
