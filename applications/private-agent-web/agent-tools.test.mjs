@@ -11,6 +11,7 @@ import { webSockets } from "@libp2p/websockets";
 import { noise } from "@chainsafe/libp2p-noise";
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { identify } from "@libp2p/identify";
+import { macFor } from "./network-context.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const temporary = await mkdtemp(join(tmpdir(), "dsmack-reconnect-"));
@@ -26,6 +27,13 @@ const { toolCatalog } = await import(new URL("./pi-tools.mjs", pathToFileURL(mod
 test.after(() => rm(temporary, { recursive: true, force: true }));
 const encoder = new TextEncoder();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test("sandbox identity follows the chosen publisher rather than another Mac or its operator", () => {
+  const first = { publisher: "0xaaaa", operator: "shared" }, chosen = { publisher: "0xbbbb", operator: "shared" };
+  const network = { macs: [first, chosen] };
+  assert.equal(macFor(network, { registration: { relay_peer: "guest" }, placement: { mac: "0xBBBB" } }), chosen);
+  assert.equal(macFor(network, { registration: { publisher: "0xcccc" } }), undefined);
+});
 
 test("end tells the broker to release the stay before closing its retained MCP stream", async () => {
   let ended = false, saved = false, closed = false;
@@ -69,7 +77,8 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
   const socket = join(temporary, "agent.sock"), listener = await listen({ root, socket });
   const remote = await createLibp2p({ addresses: { listen: ["/ip4/127.0.0.1/tcp/0/ws"] },
     transports: [webSockets()], connectionEncrypters: [noise()], streamMuxers: [yamux()], services: { identify: identify() } });
-  const admissions = [], sockets = new Set(), events = [], apiPaths = [];
+  const admissions = [], sockets = new Set(), events = [], apiPaths = [], connectionStages = [];
+  const dsmackMac = { publisher: "0xbbbb", chip: "Apple M4 Pro", region: { name: "Michigan, US" } };
   let session, firstConnection, binds = 0, discoveries = 0, reverifications = 0;
   await remote.handle("/dsmack/agent-mcp/1.0.0", async stream => {
     const framed = await readAdmission(stream); admissions.push(framed.request);
@@ -102,6 +111,10 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
     policy: { manifest: encoder.encode(JSON.stringify({ docker_compose_file: JSON.stringify({ services: { node: { command: ["serve", "/p2p/" + peer] } } }) })) },
     chainTunnels: [{ url: "wss://reconnect-fixture.trycloudflare.com/", relayPeer: peer, guestPeer: peer, expiresAt: registration.admit_until }] });
   session = new GuestSession({ cfg: {}, credit: { address: "public-wallet", signer: { signMessage: async () => "fixture-signature" } }, conversationId: "conversation",
+    macInfo: () => dsmackMac, connectionStatus: (stage, verified) => {
+      if (stage === "verified") assert.equal(verified.connection.remotePeer.toString(), registration.relay_peer);
+      connectionStages.push(stage);
+    },
     catalog: toolCatalog(), repository: () => [], changed: value => { session.statusSnapshot = value; events.push(value.state); },
     workspace: { latest: async () => null, bind: async () => { binds++; return true; }, save: async () => { throw Error("Reconnect must not save or restore"); } },
     api: async path => { apiPaths.push(path); if (path === "/agent/open") return structuredClone(lease); assert.equal(path, "/agent/status"); return { ...lease, active: true, guestSeconds: 1 }; },
@@ -122,6 +135,8 @@ test("a broken Noise stream resumes the same grant without restoring or replayin
     assert.equal(admissions.length, 1, "Interrupted calls are never reissued");
     const restored = await bash.execute("new-call", { command: "cat counter; printf SAME_STAY_OK", timeout: 2 });
     assert(!restored.isError);
+    assert.deepEqual(restored.details.dsmackMac, dsmackMac);
+    assert.deepEqual(connectionStages, ["connecting", "verified", "connecting", "verified"]);
     assert.equal(restored.content.find(x => x.type === "text").text, "once\nSAME_STAY_OK");
     assert.equal(session.lease.sessionId, lease.sessionId);
     assert.equal(admissions.length, 2); assert.equal(discoveries, 1); assert.equal(reverifications, 1); assert.equal(binds, 1);

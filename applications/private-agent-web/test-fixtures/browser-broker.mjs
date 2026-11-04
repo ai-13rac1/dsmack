@@ -7,6 +7,13 @@ const canonical = (o) =>
   JSON.stringify(
     Object.fromEntries(Object.keys(o).sort().map((key) => [key, o[key]])),
   );
+export const networkFixture = {
+  updated_at: 1793456360, capacity: "reported",
+  macs: [{ publisher: "0x" + "ab".repeat(20), operator: "0x" + "cd".repeat(20),
+    region: { name: "Michigan, US", lat: 42, lon: -84 }, chip: "Apple M4 Pro",
+    slots: 4, ready: 4, busy: 0, online: true }],
+  totals: { macs_online: 1, total_slots: 4, ready_slots: 4, busy_slots: 0, utilization: 0 },
+};
 export let partialCredit;
 export const setPartialCredit = value => { partialCredit = value; };
 export const reservation = (body) => BigInt(
@@ -61,6 +68,7 @@ export async function backend(page, kind) {
       });
     }
     if (path === "/payments/classes") return respond([]);
+    if (path === "/network") return respond(networkFixture);
     if (path === "/inference/quote") {
       return respond({
         configured: true,

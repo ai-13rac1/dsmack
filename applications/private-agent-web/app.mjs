@@ -1,6 +1,7 @@
 import { checkPageVersion } from "./page-version.mjs";
 import "@mariozechner/mini-lit/dist/MarkdownBlock.js";
-import { renderToolProgress } from "./tool-renderers.mjs";
+import { renderToolProgress, configureSandboxMac } from "./tool-renderers.mjs";
+import { macFor, sandboxLabel, networkSummary } from "./network-context.mjs";
 import { AgentInterface } from "@pi-components/components/AgentInterface.js";
 import { SessionListDialog } from "@pi-components/dialogs/SessionListDialog.js";
 import { UserMessage, AssistantMessage } from "@pi-components/components/Messages.js";
@@ -60,6 +61,46 @@ async function startupStep(name, task) {
   const start = performance.now();
   try { return await task(); }
   finally { performance.measure("startup:" + name, { start, end: performance.now() }); }
+}
+let networkSnapshot;
+function macInfo(verified) {
+  const mac = verified?.networkMac || macFor(networkSnapshot, verified);
+  return mac && { publisher: mac.publisher, chip: mac.chip, region: mac.region };
+}
+configureSandboxMac(() => macInfo(guest?.node));
+function updateSandboxLabels() {
+  const mac = macInfo(guest?.node);
+  for (const id of ["sandbox-mac", "sandbox-evidence-mac"]) $(id).textContent = sandboxLabel(mac);
+  for (const view of chat?.querySelectorAll("tool-message") || []) {
+    let label = view.querySelector(".sandbox-label");
+    if (label && !label.hasAttribute("data-network-label")) continue;
+    if (!label) {
+      label = document.createElement("a"); label.className = "sandbox-label";
+      label.setAttribute("data-network-label", "");
+      label.href = "./network/index.html"; view.prepend(label);
+    }
+    const result = view.result;
+    label.textContent = sandboxLabel(result?.details?.dsmackMac || (!result || result.isPartial ? mac : undefined));
+  }
+}
+async function refreshNetwork(signal) {
+  try { networkSnapshot = await api("/network", undefined, { signal }); }
+  catch { networkSnapshot = undefined; }
+  $("network-link").textContent = networkSummary(networkSnapshot);
+  updateSandboxLabels();
+  return networkSnapshot;
+}
+function connectionStatus(stage, verified) {
+  const region = macInfo(verified)?.region?.name;
+  $("capacity-status").dataset.stage = stage;
+  $("capacity-status").textContent = stage === "connecting"
+    ? `Connecting peer-to-peer to a Mac${region ? " in " + region : ""}…`
+    : "Verified this Mac's Apple attestation.";
+}
+function capacityMessage(empty, retry) {
+  const count = networkSnapshot?.totals?.total_slots;
+  return empty ? `No Macs on the Dsmack network are online right now; retrying in ${retry}s`
+    : `All ${count === undefined ? "" : count + " "}slots on the Dsmack network are busy; retrying in ${retry}s`;
 }
 async function openAddCredit() {
   try { await ensureWallet({ claim: false }); }
@@ -540,7 +581,8 @@ async function useSession(data) {
       },
     });
     guest = new GuestSession({
-      api, cfg, credit, conversationId, discover, reverify, workspace, savedLease: currentSession.dsmack.guest,
+      api, cfg, credit, conversationId, discover, reverify, workspace, savedLease: currentSession.dsmack.guest, macInfo,
+      connectionStatus: (stage, verified) => { if (currentSession.id === conversationId) connectionStatus(stage, verified); },
       changed: (status) => {
         const held = guests.get(conversationId);
         if (held) {
@@ -550,7 +592,7 @@ async function useSession(data) {
             record.session.dsmack.guest = {
               sessionId: status.lease.sessionId, conversationId,
               wallet: credit.address.toLowerCase(), active: status.active ?? !["released"].includes(status.state),
-              node: status.node || held.node?.registration,
+              node: status.node || held.node?.registration, mac: macInfo(held.node),
               environment: status.environment || held.environment,
               guestSeconds: status.guestSeconds || 0,
             };
@@ -802,6 +844,7 @@ async function initChat() {
   // Pi 0.75's icon buttons have no accessible name. Refresh after child render.
   const emptyChat = $("empty-chat");
   chat.updated = () => {
+    updateSandboxLabels();
     emptyChat.hidden = agent.state.messages.some(message => message.role === "user");
     chat.querySelector("message-list")?.before(emptyChat);
     const editor = chat.querySelector("message-editor");
@@ -1023,6 +1066,9 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
   let endedOther = false;
   discovery: for (;;) {
     signal?.throwIfAborted();
+    $("capacity-status").dataset.stage = "finding";
+    $("capacity-status").textContent = "Finding a free Mac on the Dsmack network…";
+    await refreshNetwork(signal);
     mark("discovery:start");
     let nodes;
     try {
@@ -1035,8 +1081,8 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
       if (["FLEET_BUSY", "FLEET_EMPTY"].includes(e.code)) {
         const retry = Number(e.retryAfterSeconds) || 15;
         showDirectory("broker");
-        const message = e.code === "FLEET_EMPTY" ? `No Macs are connected right now; retry in ${retry} seconds`
-          : `All Macs are busy, retry in ${retry} seconds`;
+        const message = capacityMessage(e.code === "FLEET_EMPTY", retry);
+        $("capacity-status").dataset.stage = e.code === "FLEET_EMPTY" ? "empty" : "busy";
         $("capacity-status").textContent = message;
         if (!wait || Date.now() + retry * 1000 > deadline) throw Object.assign(new Error(message), {
           code: e.code, status: e.status, ref: e.ref, retryAfterSeconds: e.retryAfterSeconds });
@@ -1100,6 +1146,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
       try {
         if (chainDirectory) {
           require(browserPeer, "Direct guest attestation needs a browser peer connection.");
+          connectionStatus("connecting", selected);
           mark("attestation:direct", { peer, challenge });
           try { direct = await fetchDirectAttestation({ peer: browserPeer, selected, challenge, policy, signal }); }
           catch (error) { directoryLookup().invalidate(); throw error; }
@@ -1119,6 +1166,7 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
         // The attestation endpoint omits scheduler hints; retain them for sealed
         // workspace placement without treating them as verified evidence.
         checked.placement = selected.scheduler;
+        checked.networkMac = macInfo(selected);
         if (direct) {
           checked.chainTunnels = direct.entries;
           checked.connection = direct.connection;
@@ -1147,8 +1195,9 @@ async function discover({ peer: browserPeer, wait = false, deadline = Date.now()
     if (lastRefusal) throw lastRefusal;
     if (chainDirectory) throw new Error(`${brokerFailure} Directory: chain. No live approved guest was found on chain.`);
     require(wait && Date.now() + 2000 <= deadline,
-      nodes.length ? "No Mac is free right now. Try again shortly." : "No Macs are connected right now. Try again shortly.");
-    $("capacity-status").textContent = nodes.length ? "No Mac is free right now; retrying in 2 s" : "No Macs are connected right now; retrying in 2 s";
+      capacityMessage(!nodes.length, 2));
+    $("capacity-status").dataset.stage = nodes.length ? "busy" : "empty";
+    $("capacity-status").textContent = capacityMessage(!nodes.length, 2);
     await pause(2000);
   }
 }
@@ -1167,6 +1216,9 @@ function measuredEnvironment() {
   };
 }
 function renderGuest(status) {
+  updateSandboxLabels();
+  for (const view of chat?.querySelectorAll("tool-message") || []) view.requestUpdate();
+  if (["held", "released"].includes(status.state)) void refreshNetwork();
   const held = ["held", "connecting", "reconnecting", "disconnected-held", "handover"].includes(status.state);
   $("end-session").disabled = !held;
   $("repo").disabled = held;
@@ -1346,6 +1398,7 @@ async function main() {
   emptyRepository();
   document.documentElement.dataset.ready = "true";
   // Network verification follows local rendering and never gates the wallet.
+  void refreshNetwork();
   refreshServices().catch(error);
   checkSync().catch(error);
 }

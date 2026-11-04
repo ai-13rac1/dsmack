@@ -4,6 +4,10 @@ import { html } from "lit";
 import { SquareTerminal } from "lucide";
 import { registerToolRenderer } from "@pi-components/tools/index.js";
 import { renderHeader } from "@pi-components/tools/renderer-registry.js";
+import { sandboxLabel } from "./network-context.mjs";
+
+let activeMac = () => undefined;
+export function configureSandboxMac(getMac) { activeMac = getMac; }
 
 // Pi's native bash renderer uses "Running command..." for every state. Keep
 // its inline console presentation and distinguish settled results explicitly.
@@ -15,7 +19,7 @@ registerToolRenderer("bash", {
     const command = params?.command;
     const label = completed ? (result.isError ? "bash · failed" : "bash · completed") : "bash · running";
     return { isCustom: false, content: html`<div class="dsmack-sandbox space-y-3">
-      <span class="sandbox-label">Dsmack sandbox</span>
+      <a class="sandbox-label" href="./network/index.html">${sandboxLabel(result?.details?.dsmackMac || (!completed ? activeMac() : undefined))}</a>
       ${renderHeader(state, SquareTerminal, label)}
       ${command || output ? html`<console-block .content=${[command ? `> ${command}` : "", output].filter(Boolean).join("\n\n")} .variant=${result?.isError ? "error" : "default"}></console-block>` : ""}
     </div>` };

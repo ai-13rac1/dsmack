@@ -59,7 +59,7 @@ const server = createServer({ key: await readFile(keyPath), cert: await readFile
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const base = `https://127.0.0.1:${server.address().port}/private-agent/`;
 process.env.BASE_URL = base;
-const { backend, ready, send, publicHeaders } = await import('./test-fixtures/browser-broker.mjs');
+const { backend, ready, send, publicHeaders, networkFixture } = await import('./test-fixtures/browser-broker.mjs');
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const results = [];
 try {
@@ -73,6 +73,20 @@ try {
     // NEAR image provenance is read from the public Rekor log.
     await page.route('**/*', route => [new URL(base).origin, 'https://rekor.sigstore.dev'].includes(new URL(route.request().url()).origin) ? route.continue() : route.abort());
     const calls = await backend(page, 'ux');
+    if (['empty', 'busy'].includes(scenario)) {
+      const network = structuredClone(networkFixture);
+      if (scenario === 'empty') {
+        network.macs = [];
+        Object.assign(network.totals, { macs_online: 0, total_slots: 0, ready_slots: 0, busy_slots: 0 });
+      } else {
+        Object.assign(network.macs[0], { ready: 0, busy: 4 });
+        Object.assign(network.totals, { ready_slots: 0, busy_slots: 4, utilization: 1 });
+      }
+      await page.route('**/relay-broker/network', route => route.fulfill({ headers: publicHeaders, json: network }));
+    }
+    if (scenario === 'local-only') await page.route('**/relay-broker/network', route => route.fulfill({
+      status: 503, headers: publicHeaders, json: { error: 'Network summary unavailable' },
+    }));
     if (scenario === 'stages') await page.route('**/relay-broker/inference/usage', route => route.fulfill({
       headers: publicHeaders, json: { wallet: route.request().postDataJSON().wallet.toLowerCase(),
         remainingNanoUsd: '249963688', spentNanoUsd: '36312', reservedNanoUsd: '0',
@@ -135,15 +149,27 @@ try {
       }
       if (scenario === 'scrolling') await page.evaluate(() => document.querySelector('#chat').setAutoScroll(false));
       assert.equal(await page.locator('#advanced').getAttribute('open'), null);
+      if (scenario === 'stages') {
+        await page.waitForFunction(() => /1 Mac.*4 free slots/.test(document.querySelector('#network-link').textContent));
+        assert.match(await page.locator('#network-link').getAttribute('href'), /network\/index\.html$/);
+        assert.doesNotMatch(await page.locator('#sandbox-mac').innerText(), /M4|Michigan/,
+          'an unselected sandbox must not be attributed to the only reported Mac');
+      }
+      if (scenario === 'local-only') {
+        await page.waitForFunction(() => document.querySelector('#network-link').textContent.includes('Dsmack network'));
+        assert.doesNotMatch(await page.locator('#network-link').innerText(), /\d/,
+          'failed network reads must not leave invented capacity numbers');
+      }
       assert(await page.locator('message-editor #repo').isVisible(), 'attachment in composer');
       if (scenario === 'guest') await page.evaluate(() => document.querySelector('#chat').onBeforeSend());
-      if (scenario === 'guest') await page.evaluate(() => {
+      if (scenario === 'guest') await page.evaluate(mac => {
         document.querySelector('#chat').session.state.tools.find(t => t.name === 'bash').execute = async (_id, _args, _signal, update) => {
-          update({ content: [{ type: 'text', text: 'Guest started command…' }] });
+          update({ content: [{ type: 'text', text: 'Guest started command…' }], details: { dsmackMac: mac } });
           await new Promise(resolve => { window.killGuest = resolve; });
-          throw Error('Guest stream closed before a result was received. Execution was not retried.');
+          return { isError: true, content: [{ type: 'text', text: 'Guest stream closed before a result was received. Execution was not retried.' }],
+            details: { dsmackMac: mac } };
         };
-      });
+      }, networkFixture.macs[0]);
       if (['empty', 'busy'].includes(scenario)) await page.route('**/relay-broker/nodes*', route => {
         const all = new URL(route.request().url()).searchParams.get('all');
         return route.fulfill({ status: all ? 200 : 503, headers: publicHeaders,
@@ -301,8 +327,10 @@ try {
         assert(!JSON.stringify(calls).includes(feedbackText), 'feedback and exports stay in the browser');
         assert(!calls.some(call=>call.path.startsWith('/sync/')),'local-only chats never request chain sync');
       } else if (['empty', 'busy'].includes(scenario)) {
-        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /All Macs are busy, retry in 2 seconds/).waitFor({ timeout: 60000 });
+        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs on the Dsmack network are online.*2s/ : /All 4 slots on the Dsmack network are busy.*2s/).waitFor({ timeout: 60000 });
         assert.doesNotMatch(await page.locator('#capacity-status').innerText(), /FLEET_BUSY|broker|Busy,/);
+        assert.match(await page.locator('#network-link').innerText(), scenario === 'empty' ? /0 Macs.*0 free slots/ : /1 Mac.*0 free slots/,
+          'footer capacity comes from the current network totals');
         await page.screenshot({ path: resolve(evidence, `${scenario}-${width}.png`), fullPage: true });
         await cancel(); await waitIdle();
       } else {
@@ -321,6 +349,20 @@ try {
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · running' }).count(), 0);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · failed' }).count(), 1);
         assert.equal(await page.locator('user-message message-feedback, tool-message message-feedback').count(), 0);
+        if (scenario === 'guest') {
+          const label = page.locator('tool-message .sandbox-label').first();
+          assert.match(await label.innerText(), /M4 Pro.*Michigan/);
+          const macLink = page.locator('tool-message a.sandbox-label, tool-message .sandbox-label a').first();
+          assert.match(await macLink.getAttribute('href'), /network\/index\.html$/);
+          const otherNetwork = structuredClone(networkFixture);
+          Object.assign(otherNetwork.macs[0], { publisher: '0x' + 'ef'.repeat(20), chip: 'Apple M3', region: { name: 'Osaka, JP' } });
+          await page.route('**/relay-broker/network', route => route.fulfill({ headers: publicHeaders, json: otherNetwork }));
+          await ready(page);
+          await page.locator('tool-message .sandbox-label').filter({ hasText: 'M4 Pro' }).waitFor();
+          assert.match(await page.locator('tool-message .sandbox-label').first().innerText(), /M4 Pro.*Michigan/,
+            'saved tool cards retain their chosen Mac when the reported network changes');
+          assert.doesNotMatch(await page.locator('tool-message .sandbox-label').first().innerText(), /M3|Osaka/);
+        }
         if (scenario === 'orphan') {
           await page.locator('#retry-reply').click();
           await page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming && document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2);

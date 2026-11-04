@@ -107,8 +107,8 @@ export function createGuestPeer() {
   });
 }
 export class GuestSession {
-  constructor({ api, cfg, credit, conversationId, discover, reverify, changed, repository, catalog, savedLease, workspace }) {
-    Object.assign(this, { api, cfg, credit, conversationId, discover, reverify, changed, repository, catalog, savedLease, workspace });
+  constructor({ api, cfg, credit, conversationId, discover, reverify, changed, repository, catalog, savedLease, workspace, macInfo, connectionStatus }) {
+    Object.assign(this, { api, cfg, credit, conversationId, discover, reverify, changed, repository, catalog, savedLease, workspace, macInfo, connectionStatus });
   }
   tools() {
     return this.catalog.map(tool => ({
@@ -119,6 +119,7 @@ export class GuestSession {
           const client = await this.ensure(signal, tool.name === "bash" ? Number(args.timeout || this.environment?.commandTimeoutSeconds || 120) : 5);
           // A handover can select a fresh guest after the model request began.
           if (this.firstPrompt !== undefined && this.node.policy.monitor?.name === "baseline-pg2") await this.checkPreflight(client, signal);
+          const dsmackMac = this.macInfo?.(this.node);
           performance.mark("dsmack:tool:start", { detail: tool.name });
           const messages = this.record?.agent.state.messages || [];
           const assistant = messages.findLast(message => message.role === "assistant");
@@ -128,7 +129,7 @@ export class GuestSession {
           }, {
             signal, timeout: this.environment.commandTimeoutSeconds * 1000 + 15000,
             onprogress: p => {
-              if (p.message) onUpdate?.({ content: [{ type: "text", text: p.message }], details: { progress: p.progress } });
+              if (p.message) onUpdate?.({ content: [{ type: "text", text: p.message }], details: { progress: p.progress, ...(dsmackMac ? { dsmackMac } : {}) } });
             },
           });
           } catch (error) {
@@ -141,7 +142,7 @@ export class GuestSession {
           this.lastActivity = Date.now();
           // A lost billing/status read must not discard a command's received result.
           await this.status().catch(error => this.changed({ state: "error", error: replyFailure(error).message }));
-          return { content: result.content, isError: !!result.isError, details: result._meta?.["dsmack/piDetails"] || result.structuredContent || {} };
+          return { content: result.content, isError: !!result.isError, details: { ...(result._meta?.["dsmack/piDetails"] || result.structuredContent || {}), ...(dsmackMac ? { dsmackMac } : {}) } };
         } catch (error) {
           const failure = replyFailure(error);
           if (!["browser", "offline", "broker", "guest", "capacity"].includes(failure.category)) throw error;
@@ -168,7 +169,7 @@ export class GuestSession {
     require(saved.wallet === this.credit.address.toLowerCase(), "This conversation’s held guest belongs to another wallet. Connect its owner to end the session.");
     require(saved.conversationId === this.conversationId, "Saved guest belongs to another conversation.");
     this.lease = { sessionId: saved.sessionId };
-    this.node = { registration: saved.node };
+    this.node = { registration: saved.node, networkMac: saved.mac };
     this.environment = saved.environment;
     await this.status();
     if (this.lease) this.poll = setInterval(() => this.status().catch(e => this.changed({ state: "disconnected-held", lease: this.lease, node: this.node?.registration, active: true, error: e.message })), 10000);
@@ -215,6 +216,7 @@ export class GuestSession {
     require(fresh.relay_peer === prior.relay_peer && fresh.attestation.run === prior.attestation.run &&
       fresh.payments.runId === prior.payments.runId && fresh.receipt_key === prior.receipt_key &&
       fresh.secret_key === prior.secret_key, "Reconnected guest differs from the existing attested stay.");
+    verified.networkMac ||= this.node.networkMac;
     this.node = verified;
     // Preserve the guest's live filesystem and controller. A reconnect must
     // never restore an older checkpoint or replay the interrupted tool call.
@@ -286,6 +288,7 @@ export class GuestSession {
     catch (error) { verified.invalidateDirectory?.(); throw error; }
   }
   async connectGuest(verified, signal, resume) {
+    this.connectionStatus?.("connecting", verified);
     const peer = this.peer;
     performance.mark("dsmack:tunnels:start");
     let tunnelEntries = verified.chainTunnels;
@@ -312,6 +315,7 @@ export class GuestSession {
     }
     if (!connection) throw failure;
     require(connection.remotePeer.toString() === verified.registration.relay_peer, "Noise peer differs from attested guest.");
+    this.connectionStatus?.("verified", verified);
     performance.mark("dsmack:dial:end");
     performance.mark("dsmack:mcp:start");
     const stream = await connecting(30000, signal, scoped => connection.newStream("/dsmack/agent-mcp/1.0.0", { runOnLimitedConnection: true, signal: scoped }));

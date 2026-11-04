@@ -36,9 +36,10 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     retryable = false;
   } else if (code === "FLEET_BUSY" || code === "FLEET_EMPTY") {
     category = "capacity";
-    message = code === "FLEET_BUSY"
-      ? `All Macs are busy, retry in ${error.retryAfterSeconds || 15} seconds.`
-      : "No Macs are connected right now. Try again shortly.";
+    const capacity = original.match(/^(?:All (?:\d+ )?slots on the Dsmack network are busy|No Macs on the Dsmack network are online right now); retrying in \d+s/)?.[0];
+    message = capacity || (code === "FLEET_BUSY"
+      ? `All slots on the Dsmack network are busy; retrying in ${error.retryAfterSeconds || 15}s`
+      : `No Macs on the Dsmack network are online right now; retrying in ${error.retryAfterSeconds || 15}s`);
   } else if (/USAGE_PENDING|REQUEST_IN_FLIGHT|REQUEST_ALREADY_DISPATCHED|REQUEST_REPLAY|Usage is unresolved/.test(code || original)) {
     category = "credit";
     message = "The last charge is still being confirmed. Try again in a minute.";

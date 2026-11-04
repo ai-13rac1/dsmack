@@ -289,7 +289,7 @@ try {
     const marker = "FIRST_VISIT_PROMPT_STAYS_ENCRYPTED";
     await send(page, marker);
     await alert(page, "SYNTHETIC_STOP");
-    await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("message-editor").isStreaming);
+    await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("#new-chat").disabled);
     await page.waitForFunction(() => document.querySelector("#chat-status").textContent.length > 0);
     assert.match(await failureLine(page).getAttribute("title"), /SYNTHETIC_STOP/,
       "Background sync failure must preserve the model error details");
@@ -345,7 +345,7 @@ try {
   await run("held-guest-can-be-ended-after-reload", "recovery", async (page, calls) => {
     await send(page, "Saved conversation survives lease recovery.");
     await alert(page, "SYNTHETIC_STOP");
-    await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("message-editor").isStreaming);
+    await page.waitForFunction(() => document.querySelector("#chat").dataset.saved === "true" && !document.querySelector("#new-chat").disabled);
     const wallet = (await page.locator("#wallet").textContent()).toLowerCase();
     await page.evaluate(wallet => new Promise((resolve, reject) => {
       const id = document.querySelector("#chat").dataset.sessionId;

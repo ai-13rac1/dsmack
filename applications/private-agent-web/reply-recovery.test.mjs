@@ -106,6 +106,11 @@ test('guest closure and busy capacity cannot be confused with a broker restart o
   assert.equal(guest.retryable, true);
   const busy = replyFailure(Object.assign(Error('busy'), { code: 'FLEET_BUSY', status: 503, retryAfterSeconds: 7 }));
   assert.equal(busy.category, 'capacity');
+  const counted = replyFailure(referenceError(Object.assign(Error('All 4 slots on the Dsmack network are busy; retrying in 7s'), { code: 'FLEET_BUSY', status: 503 }), '1234abcd'));
+  assert.match(counted.message, /4 slots/);
+  assert.match(counted.message, /7s$/);
+  assert.doesNotMatch(counted.message, /FLEET_BUSY|HTTP|ref /);
+
   assert.equal(replyFailure(Object.assign(Error('empty'), { code: 'FLEET_EMPTY', status: 503 })).category, 'capacity');
   const http = replyFailure(Object.assign(Error('refused'), { status: 409, code: 'BAD_REQUEST', ref: '1234abcd' }));
   assert.equal(http.category, 'broker');
