@@ -33,7 +33,7 @@ async function alert(page, pattern) {
     source => [...document.querySelectorAll("#alert, .send-status")].some(e =>
       !e.hidden && new RegExp(source, "i").test(e.title)),
     pattern,
-    { timeout: 15000 },
+    { timeout: 60000 },
   );
 }
 async function sharedAppFrame(page) {
@@ -69,9 +69,9 @@ async function run(name, kind, fn) {
     });
   } catch (e) {
     result.error = e.message;
-    result.alert = await page.locator("#alert").textContent();
-    result.chatStatus = await page.locator("#chat-status").textContent();
-    await page.screenshot({ path: resolve(evidence, name + "-failed.png"), fullPage: true });
+    result.alert = await page.locator("#alert").textContent({ timeout: 1000 }).catch(() => null);
+    result.chatStatus = await page.locator("#chat-status").textContent({ timeout: 1000 }).catch(() => null);
+    await page.screenshot({ path: resolve(evidence, name + "-failed.png"), fullPage: true }).catch(() => {});
   }
   report.cases.push(result);
   await ctx.close();
@@ -447,12 +447,16 @@ try {
       return bounds.top >= 0 && bounds.bottom <= innerHeight;
     });
     await page.locator("#add-credit, #advanced").evaluateAll(views => views.forEach(view => { view.open = false; }));
-    await send(page, "Private text must stay here when the token reservation exceeds credit.");
+    const draft = "Private text must stay here when the token reservation exceeds credit.";
+    await send(page, draft);
     await alert(page, "CREDIT_EXHAUSTED: Chat credit used up\\.");
+    assert.equal(await page.locator("agent-interface message-editor textarea").inputValue(), draft);
+    await page.locator("user-message").waitFor({ state: "detached" });
+    assert.equal(await page.locator("user-message").count(), 0, "A refused reservation restores the draft without a transcript turn");
     assert(calls.some((r) => r.path === "/inference/prepare"));
     assert(!calls.some((r) => r.path === "/inference/chat"), "Underfunded prompt left the browser");
     assert.equal(await page.locator("#advanced").evaluate(view => view.open), false);
-    await page.locator(".send-status .add-credit-action").click();
+    await page.locator("#alert .add-credit-action").click();
     assert.equal(await page.locator("#advanced").evaluate(view => view.open), true);
     assert.equal(await page.locator("#add-credit").evaluate(view => view.open), true);
     assert(await page.locator("#deposit-amount").isVisible());

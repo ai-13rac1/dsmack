@@ -1,5 +1,5 @@
 import { store } from "./credit.mjs";
-import { discoverLinkRelay, createDeviceLinkReceiver, sendDeviceLink } from "./device-link.mjs";
+import { discoverLinkRelay, createDeviceLinkReceiver, sendDeviceLink, requestOriginMigration, serveOriginMigration } from "./device-link.mjs";
 import { watchRecovery } from "./recovery-notice.mjs";
 import { createEmailGate } from "./email-gate-client.mjs";
 
@@ -215,6 +215,8 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport, befo
       onCode, onStatus: status, confirm, onBundle: imported });
     $("link-qr").src = receiver.qrDataUrl;
     $("link-qr").hidden = false;
+    $("link-qr-text").value = receiver.qr;
+    $("link-qr-text").hidden = false;
     receiver.completed.then(() => location.reload()).catch((e) => { report(e); });
     status("Scan this QR with the device that has your chats, then compare the code.");
   });
@@ -241,6 +243,13 @@ export function continuityUI({ keys, credit, cfg, api, error, beforeExport, befo
       throw Error("No QR found. Try scanning again.");
     } finally { stream.getTracks().forEach((t) => t.stop()); video.hidden = true; video.srcObject = null; }
   });
+  bind("migrate-origin", async () => {
+    const bundle = await requestOriginMigration($("old-origin").value, { confirm, onCode, onStatus: status });
+    await imported(bundle);
+    location.reload();
+  });
+  serveOriginMigration({ getBundle: async () => { requireWallet(); await beforeExport(); return keys.bundle; }, confirm, onCode, onStatus: status,
+    allowedOrigin: "https://private-agent.dstack.soc1024.com" }).catch(report);
   window.addEventListener("pagehide", (event) => { receiver?.close(); dkimPoll?.abort(); if (!event.persisted) stopRecoveryNotice(); });
   update().catch(report);
   return { bind, status, update };

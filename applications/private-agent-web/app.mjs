@@ -61,7 +61,9 @@ async function startupStep(name, task) {
   try { return await task(); }
   finally { performance.measure("startup:" + name, { start, end: performance.now() }); }
 }
-function openAddCredit() {
+async function openAddCredit() {
+  try { await ensureWallet({ claim: false }); }
+  catch (e) { error(e); return; }
   $("advanced").open = true;
   $("add-credit").open = true;
   $("add-credit").scrollIntoView({ block: "center" });
@@ -95,10 +97,14 @@ function sendFailure(e) {
 // that optional field only during rendering; the ledger and chat total retain it.
 const renderAssistant = AssistantMessage.prototype.render;
 AssistantMessage.prototype.render = function () {
-  const usage = this.message.usage;
+  const { usage, errorMessage, stopReason } = this.message;
   this.message.usage = undefined;
+  if (this.message.failure) {
+    this.message.errorMessage = undefined;
+    this.message.stopReason = "stop";
+  }
   try { return renderAssistant.call(this); }
-  finally { this.message.usage = usage; }
+  finally { Object.assign(this.message, { usage, errorMessage, stopReason }); }
 };
 const renderUser = UserMessage.prototype.render;
 UserMessage.prototype.render = function () {
@@ -223,18 +229,21 @@ async function claimChatCredit() {
   if (sharedLink) activeArtifactView?.refreshSelectedBudget().catch(error);
   if (guest) await guest.restore();
 }
-async function ensureWallet() {
+async function ensureWallet({ claim = true } = {}) {
   if (!credit.signer) {
     await keys.create();
     await credit.init();
     currentSession.dsmack.wallet = credit.address.toLowerCase();
     if (cfg.syncAnchor) sync = new ChatSync({ cfg, credit, keys: keys.bundle, storage, api });
     currentSession.messages = agent.state.messages;
-    await saveCurrentChat();
     if (!await loadSharedViewer()) await useSession(currentSession);
+    if (sendingMessage && !agent.state.messages.includes(sendingMessage)) {
+      agent.state.messages = [...agent.state.messages, sendingMessage];
+      chat.requestUpdate();
+    }
     render();
   }
-  await claimChatCredit();
+  if (claim) await claimChatCredit();
 }
 async function refreshServices() {
   await startupStep("broker-identity", () => credit.checkBroker(api));
@@ -369,6 +378,8 @@ function renderReplyRecovery() {
   panel.hidden = !reply;
   if (!reply) return;
   panel.dataset.category = reply.failure.category;
+  const user = agent.state.messages.findLast(message => message.role === "user");
+  $("reply-recovery-message").hidden = user?.sendStage === "error" && !!user.sendStatus;
   $("reply-recovery-message").textContent = reply.failure.message;
   $("reply-recovery-message").title = reply.failure.detail || "";
   $("reply-recovery-charge").textContent = reply.provider === "near" ? meteredReply(reply.billing) : "Model tokens are billed by your provider. Guest seconds use chat credit.";
@@ -379,6 +390,8 @@ async function retryReply() {
   if (!reply || chatBusy || agent.state.isStreaming) return;
   setChatBusy(true);
   clearError();
+  sendingMessage = agent.state.messages.findLast(message => message.role === "user");
+  chat.setAutoScroll(true);
   try {
     if (reply.provider === "near") {
       $("reply-recovery-charge").textContent = "Checking the last charge before retrying…";
@@ -394,10 +407,12 @@ async function retryReply() {
     // user/tool context while preserving the interrupted text in local history.
     $("reply-recovery").hidden = true;
     await agent.prompt([]);
+    if (!retryCandidate(agent.state.messages)) sendStatus("");
   } catch (e) {
-    const failure = replyFailure(e);
-    error(Object.assign(new Error(failure.message), { replyFailure: failure }));
+    sendFailure(e);
   } finally {
+    await saveCurrentChat().catch(error);
+    sendingMessage = undefined;
     setChatBusy(false);
     chat.requestUpdate();
   }
@@ -839,6 +854,8 @@ async function initChat() {
     agent.state.messages = [...agent.state.messages, sendingMessage];
     const editor = chat.querySelector("message-editor");
     editor.value = "";
+    chat.setAutoScroll(true);
+    let retainMessage = false;
     chat.requestUpdate();
     try {
       // Render the accepted message before the first asynchronous credit check.
@@ -846,8 +863,27 @@ async function initChat() {
       await chat.querySelector("message-list").updateComplete;
       chat.querySelector("user-message:last-of-type")?.scrollIntoView({ block: "nearest" });
       await chat.onBeforeSend();
+      require(agent.state.messages.includes(sendingMessage), "Your message is no longer in this chat. Please send it again.");
+      retainMessage = true;
+      chat.setAutoScroll(true);
       await agent.prompt([]);
-    } catch (e) { sendFailure(e); }
+      const replies = agent.state.messages.slice(agent.state.messages.indexOf(sendingMessage) + 1)
+        .filter(message => message.role !== "system");
+      const refused = replies.length === 1 && replies[0].failure && replies[0].billing?.dispatched === false
+        ? replies[0] : undefined;
+      if (refused) {
+        agent.state.messages = agent.state.messages.filter(message => message !== refused);
+        retainMessage = false;
+        throw Object.assign(new Error(refused.failure.message), { replyFailure: refused.failure });
+      }
+    } catch (e) {
+      if (!retainMessage) {
+        agent.state.messages = agent.state.messages.filter(message => message !== sendingMessage);
+        chat.querySelector("message-editor").value = input;
+        chat.requestUpdate();
+        error(e);
+      } else sendFailure(e);
+    }
     finally {
       await saveCurrentChat().catch(error);
       sendingMessage = undefined;
@@ -1284,10 +1320,14 @@ async function main() {
       " Base Sepolia ETH";
   });
   action("deposit", async () => {
-    await credit.deposit($("deposit-amount").value.trim());
-    $("prepaid-status").textContent = "USDC deposited. Checking credit…";
-    await claimChatCredit();
-    $("prepaid-status").textContent = "USDC deposited.";
+    await ensureWallet({ claim: false });
+    try { await claimChatCredit(); }
+    catch (e) { if (e.code !== "STARTER_BUDGET_EXHAUSTED") throw e; }
+    const { minimumGranted } = await credit.deposit($("deposit-amount").value.trim());
+    $("prepaid-status").textContent = "USDC deposited. Credit usually appears in about 15 minutes, once the network finishes confirming it. Checking in the background…";
+    credit.waitForDeposit(minimumGranted, claimChatCredit).then(credited => {
+      if (credited) $("prepaid-status").textContent = "USDC deposited. Credit is available.";
+    }).catch(error);
   });
   action("refund", refund);
   action("verified", async () => { $("advanced").open = true; $("attestations").scrollIntoView({ block: "nearest" }); });

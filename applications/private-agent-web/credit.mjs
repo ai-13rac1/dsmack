@@ -97,11 +97,24 @@ export class Credit {
     require(typeof amount === "string" && /^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/.test(amount), "Enter a USDC amount with up to six decimal places.");
     const units = parseUnits(amount, 6);
     require(units > 0n, "Deposit must be positive.");
+    const minimumGranted = BigInt(this.chatCredit?.grantedNanoUsd || "0") + units * 1000n;
     const c = await this.contract();
     const token = new Contract(await c.token(), ["function approve(address,uint256) returns(bool)"], this.signer);
     await (await token.approve(this.cfg.escrow, units)).wait();
     const tx = await c.deposit(units); await tx.wait();
-    return tx.hash;
+    return { hash: tx.hash, minimumGranted };
+  }
+  async waitForDeposit(minimumGranted, refresh) {
+    const wallet = this.address;
+    while (this.address === wallet) {
+      try {
+        await refresh();
+        if (this.address === wallet && BigInt(this.chatCredit?.grantedNanoUsd || "0") >= minimumGranted) return true;
+      } catch { /* Keep checking through temporary broker or network failures. */ }
+      if (this.address !== wallet) break;
+      await new Promise(resolve => setTimeout(resolve, 30000));
+    }
+    return false;
   }
   async closeAccount() {
     const c = await this.contract(), exit = Number(await c.exitRequestedAt(this.address));

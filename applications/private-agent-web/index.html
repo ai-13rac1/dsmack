@@ -17,6 +17,7 @@
 <div class="actions"><button id="add-passkey">Save a passkey</button><button id="recover-passkey" class="secondary">Recover with passkey</button></div>
 <h3>Link devices</h3><p class="small muted">On the new device, show a QR. On the existing device, scan it and compare the short code.</p>
 <button id="receive-device" class="secondary">Show this device’s QR</button><img id="link-qr" alt="Scan to link this device" width="240" hidden>
+<textarea id="link-qr-text" aria-label="This device QR link" readonly hidden></textarea>
 <label for="link-target">QR link from the new device</label><textarea id="link-target" placeholder="Scan or paste the QR link"></textarea>
 <video id="link-camera" muted playsinline hidden></video><div class="actions"><button id="scan-device" class="secondary">Scan QR</button><button id="send-device">Link this device</button></div>
 <p id="link-code" class="mono" aria-live="polite"></p><div id="link-confirm" hidden><p>Compare this code on both devices before allowing access to your wallet and chats.</p><button id="link-approve">Codes match · Allow</button><button id="link-deny" class="secondary">Cancel</button></div>
@@ -25,6 +26,7 @@
 <p class="small muted">Send the prepared message from your own email account, then return here. Email recovery takes 48 hours; passkeys and QR links work immediately.</p>
 <button id="finish-email-recovery" hidden>Check and finish email recovery</button>
 
+<details><summary>Move from an older origin</summary><label for="old-origin">Previous app URL</label><input id="old-origin" type="url" placeholder="https://…/private-agent/"><button id="migrate-origin" class="secondary">Open previous app</button></details>
 <p id="continuity-status" role="status"></p><button id="switch-wallet" class="secondary">Switch wallet</button></div>
 <div class="account-details">
 

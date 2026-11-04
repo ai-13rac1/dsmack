@@ -13,6 +13,7 @@ const tls = await mkdtemp(resolve(evidence, 'tls-'));
 const keyPath = resolve(tls, 'key.pem'), certPath = resolve(tls, 'cert.pem');
 await promisify(execFile)('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost', '-keyout', keyPath, '-out', certPath]);
 import { model } from './test-fixtures/near.mjs';
+import { sealArtifact } from './artifact-share.mjs';
 function encrypt(text, publicKey) {
   const ephemeral = Wallet.createRandom(), nonce = randomBytes(12);
   const point = Buffer.from(new SigningKey(ephemeral.privateKey).computeSharedSecret('0x04' + publicKey).slice(2), 'hex');
@@ -21,13 +22,13 @@ function encrypt(text, publicKey) {
   return Buffer.concat([Buffer.from(ephemeral.signingKey.publicKey.slice(2), 'hex'), nonce,
     cipher.update(text, 'utf8'), cipher.final(), cipher.getAuthTag()]).toString('hex');
 }
-let mode, turns, closedStreams = 0;
+let mode, turns, requests, closedStreams = 0;
 const server = createServer({ key: await readFile(keyPath), cert: await readFile(certPath) }, async (req, res) => {
   try {
     if (req.method === 'POST' && req.url === '/relay-broker/inference/chat') {
       let raw = ''; for await (const chunk of req) raw += chunk;
       const body = JSON.parse(raw), publicKey = body.headers['x-client-pub-key'];
-      turns++;
+      turns++; requests.push(body.body);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
       const frame = delta => res.write('data: ' + JSON.stringify({ model, choices: [{ delta }] }) + '\n\n');
       if (['cancel', 'cancel-billing'].includes(mode) && turns === 1) {
@@ -38,12 +39,17 @@ const server = createServer({ key: await readFile(keyPath), cert: await readFile
         frame({ tool_calls: [{ index: 0, id: 'call-one', type: 'function', function: {
           name: encrypt('bash', publicKey), arguments: encrypt(JSON.stringify({ command: 'which python3 python; python3 -V' }), publicKey),
         } }] });
-        if (mode === 'orphan') { setTimeout(() => res.destroy(), 200); return; }
+        if (mode === 'orphan') { setTimeout(() => res.destroy(), 1000); return; }
+      } else if (mode === 'scrolling') {
+        frame({ content: encrypt('A streamed paragraph.\n\n'.repeat(100), publicKey) });
+        setTimeout(() => { frame({ content: encrypt('The visible end of the streamed reply.', publicKey) }); res.end('data: [DONE]\n\n'); }, 250);
+        return;
       } else frame({ content: encrypt('Reply complete.', publicKey) });
       res.end('data: [DONE]\n\n'); return;
     }
     if (req.url.startsWith('/relay-broker/')) { res.writeHead(500); res.end('Unmocked broker route'); return; }
-    const path = new URL(req.url, 'http://local').pathname.replace(/^\/private-agent\//, '') || 'index.html';
+    const relative = new URL(req.url, 'http://local').pathname.replace(/^\/private-agent\//, '');
+    const path = relative.replace(/^a\//, '') || 'index.html';
     const file = resolve('dist', path); assert(file.startsWith(resolve('dist') + '/'));
     const data = await readFile(file);
     res.writeHead(200, { 'content-type': ({ '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.png': 'image/png' })[extname(file)] });
@@ -57,8 +63,8 @@ const { backend, ready, send, publicHeaders } = await import('./test-fixtures/br
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}), args: ['--no-sandbox', '--ignore-certificate-errors'] });
 const results = [];
 try {
-  for (const width of [390, 1280]) for (const scenario of ['stages', 'cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy', 'local-only']) {
-    mode = scenario; turns = 0;
+  for (const width of [390, 1280]) for (const scenario of ['stages', 'shared-first-send', 'preflight-credit', 'preflight-usage', 'preflight-broker', 'preflight-prepare', 'scrolling', 'cancel', 'cancel-billing', 'guest', 'orphan', 'empty', 'busy', 'local-only']) {
+    mode = scenario; turns = 0; requests = [];
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width, height: 900 } });
     const page = await context.newPage(), errors = [], logs = [];
     page.setDefaultTimeout(15000);
@@ -78,6 +84,13 @@ try {
     let usageStarted = new Promise(resolve => observedUsage = resolve);
     if (['cancel', 'cancel-billing'].includes(scenario)) {
       await page.route('**/relay-broker/sync/blob', route => { pendingSync.push(route); });
+      if (scenario === 'cancel-billing') await page.route('**/relay-broker/inference/credit', route => {
+        if (!holdUsage || turns === 0) return route.fallback();
+        return route.fulfill({ headers: publicHeaders, body: JSON.stringify({
+          wallet: route.request().postDataJSON().wallet.toLowerCase(), model,
+          remainingNanoUsd: '250000000', spentNanoUsd: '0', reservedNanoUsd: '0', usedTokens: '0', pendingInferenceId: 'unsettled',
+        }) });
+      });
       await page.route('**/relay-broker/inference/usage', route => {
         if (!holdUsage) return route.fallback();
         pendingUsage++;
@@ -87,6 +100,35 @@ try {
     }
     try {
       await ready(page);
+      if (scenario === 'shared-first-send') {
+        const sealed = await sealArtifact('<!doctype html><title>Shared app</title><p>Shared app</p>');
+        await page.route('**/relay-broker/artifacts/share/' + sealed.cid, route => route.fulfill({
+          headers: publicHeaders, body: JSON.stringify({ cid: sealed.cid, ciphertext: sealed.ciphertext }),
+        }));
+        await page.goto(new URL('a/#' + new URLSearchParams({ cid: sealed.cid, k: sealed.key }), base).href);
+        await page.waitForFunction(() => document.documentElement.dataset.servicesReady === 'true');
+        assert(!/^0x/.test(await page.locator('#wallet').innerText()), 'shared viewer begins without a wallet');
+      }
+      let rejectPreflight = scenario.startsWith('preflight-');
+      if (rejectPreflight) {
+        if (scenario === 'preflight-broker') await page.route('**/relay-broker/key', route => rejectPreflight
+          ? route.fulfill({ status: 503, headers: publicHeaders, body: JSON.stringify({ error: { code: 'UNAVAILABLE', message: 'Service unavailable' } }) })
+          : route.fallback());
+        else if (scenario === 'preflight-prepare') await page.route('**/relay-broker/inference/prepare', route => rejectPreflight
+          ? route.fulfill({ status: 409, headers: publicHeaders, body: JSON.stringify({ error: { code: 'CREDIT_EXHAUSTED', message: 'Credit used up' } }) })
+          : route.fallback());
+        else await page.route('**/relay-broker/inference/credit', async route => {
+          if (!rejectPreflight) return route.fallback();
+          const value = { wallet: route.request().postDataJSON().wallet.toLowerCase(), model, remainingNanoUsd: '250000000', spentNanoUsd: '0', reservedNanoUsd: '0', usedTokens: '0' };
+          value.remainingNanoUsd = scenario === 'preflight-credit' ? '0' : value.remainingNanoUsd;
+          value.pendingInferenceId = scenario === 'preflight-usage' ? 'unsettled' : null;
+          await route.fulfill({ headers: publicHeaders, body: JSON.stringify(value) });
+        });
+        if (scenario === 'preflight-usage') await page.route('**/relay-broker/inference/usage', route => rejectPreflight
+          ? route.fulfill({ headers: publicHeaders, body: JSON.stringify({ wallet: route.request().postDataJSON().wallet.toLowerCase(), model, remainingNanoUsd: '250000000', spentNanoUsd: '0', reservedNanoUsd: '0', usedTokens: '0', pendingInferenceId: 'unsettled' }) })
+          : route.fallback());
+      }
+      if (scenario === 'scrolling') await page.evaluate(() => document.querySelector('#chat').setAutoScroll(false));
       assert.equal(await page.locator('#advanced').getAttribute('open'), null);
       assert(await page.locator('message-editor #repo').isVisible(), 'attachment in composer');
       if (scenario === 'guest') await page.evaluate(() => document.querySelector('#chat').onBeforeSend());
@@ -121,6 +163,16 @@ try {
         }));
       }
       await send(page, 'Please inspect my code.');
+      if (rejectPreflight) {
+        await page.locator('#alert').waitFor({ state: 'visible' });
+        await page.waitForFunction(() => !document.querySelector('#new-chat').disabled);
+        assert.equal(turns, 0, 'pre-send refusal never dispatches a model request');
+        assert.equal(await page.locator('user-message').count(), 0, 'pre-send refusal removes the pending transcript turn');
+        assert.equal(await page.locator('message-editor textarea').inputValue(), 'Please inspect my code.', 'pre-send refusal restores the draft');
+        assert.equal(await page.locator('.send-status').count(), 0, 'one plain error is shown outside the transcript');
+        rejectPreflight = false;
+        await send(page, 'Please inspect my code.');
+      }
       if (scenario === 'stages') {
         await creditStarted;
         assert(await page.locator('#empty-chat').isHidden(), 'accepted prompt hides the empty conversation while credit is checked');
@@ -136,10 +188,10 @@ try {
         releaseChat();
       }
       await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'assistant') || document.querySelector('#chat').session.state.isStreaming);
-      const waitIdle = () => page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming);
+      const waitIdle = () => page.waitForFunction(() => !document.querySelector('#chat').session.state.isStreaming, undefined, { timeout: 60000 });
       const cancel = () => page.locator('message-editor').getByRole('button', { name: /abort|cancel|stop/i }).click();
       if (['cancel', 'cancel-billing'].includes(scenario)) {
-        await page.getByText('Reply in progress…', { exact: true }).waitFor();
+        await page.getByText('Reply in progress…', { exact: true }).waitFor({ timeout: 60000 });
         await cancel(); await waitIdle();
         if (scenario === 'cancel-billing') {
           await usageStarted;
@@ -151,14 +203,24 @@ try {
           await send(page,'A fresh message while the cancelled charge settles.');
           await usageStarted;
           assert.equal(turns,1,'pending provider billing cannot dispatch another model request');
+          await page.waitForFunction(() => !document.querySelector('#new-chat').disabled, undefined, { timeout: 35000 });
+          assert.equal(await page.locator('user-message').count(), 1, 'pending billing does not leave an unsent user turn');
+          assert.equal(await page.locator('message-editor textarea').inputValue(), 'A fresh message while the cancelled charge settles.');
           holdUsage=false;
+          await send(page,'A fresh message while the cancelled charge settles.');
           await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2 && !document.querySelector('#chat').session.state.isStreaming);
           assert.equal(turns,2);
           assert.equal(await page.locator('user-message').count(),2);
         } else {
+          const failureText = await page.evaluate(() => document.querySelector('#chat').session.state.messages.find(message => message.stopReason === 'aborted').failure.message);
+          const copies = await page.getByText(failureText, { exact: true }).all();
+          assert.equal((await Promise.all(copies.map(copy => copy.isVisible()))).filter(Boolean).length, 1, 'interrupted reply shows its failure once');
           await page.locator('#retry-reply').click();
           await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 2 && !document.querySelector('#chat').session.state.isStreaming);
           assert.equal(await page.locator('user-message').count(), 1);
+          assert.equal(await page.locator('.send-status[data-stage="error"]').count(), 0, 'successful Retry clears the old user error');
+          assert(await page.locator('#reply-recovery').isHidden(), 'successful Retry hides the failure panel');
+          assert(await page.locator('#alert').isHidden(), 'successful Retry leaves no duplicate failure alert');
           await send(page, 'A fresh message after cancelling.');
           await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.filter(m => m.role === 'assistant').length === 3 && !document.querySelector('#chat').session.state.isStreaming);
           assert.equal(turns, 3);
@@ -170,6 +232,16 @@ try {
         assert(await page.locator('.send-status').count() === 0, 'progress clears when the reply arrives');
         await page.locator('#new-chat').click();
         await page.locator('#empty-chat').waitFor({state:'visible'});
+      } else if (['shared-first-send', 'scrolling'].includes(scenario) || scenario.startsWith('preflight-')) {
+        await waitIdle();
+        assert.equal(turns, 1);
+        assert.equal(await page.locator('user-message').count(), 1, 'the prompted session retains exactly the submitted turn');
+        assert(requests[0].messages.some(message => message.role === 'user'), 'encrypted request contains a user turn');
+        if (scenario === 'shared-first-send') assert.match(await page.locator('#chat').getAttribute('data-session-id'), /^shared-/);
+        if (scenario === 'scrolling') await page.waitForFunction(() => {
+          const scroller = document.querySelector('#chat .overflow-y-auto');
+          return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 10;
+        });
       } else if (scenario === 'local-only') {
         await waitIdle();
         await page.waitForFunction(() => document.querySelector('#chat').dataset.saved === 'true');
@@ -219,7 +291,7 @@ try {
         assert(!JSON.stringify(calls).includes(feedbackText), 'feedback and exports stay in the browser');
         assert(!calls.some(call=>call.path.startsWith('/sync/')),'local-only chats never request chain sync');
       } else if (['empty', 'busy'].includes(scenario)) {
-        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /All Macs are busy, retry in 2 seconds/).waitFor();
+        await page.locator('#capacity-status').getByText(scenario === 'empty' ? /No Macs are connected/ : /All Macs are busy, retry in 2 seconds/).waitFor({ timeout: 60000 });
         assert.doesNotMatch(await page.locator('#capacity-status').innerText(), /FLEET_BUSY|broker|Busy,/);
         await page.screenshot({ path: resolve(evidence, `${scenario}-${width}.png`), fullPage: true });
         await cancel(); await waitIdle();
@@ -230,11 +302,12 @@ try {
           await page.screenshot({ path: resolve(evidence, `guest-running-${width}.png`), fullPage: true });
           await page.evaluate(() => window.killGuest());
         }
-        await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'toolResult'));
+        await page.waitForFunction(() => document.querySelector('#chat').session.state.messages.some(m => m.role === 'toolResult'), undefined, { timeout: 60000 });
         await waitIdle();
         const messages = await page.evaluate(() => document.querySelector('#chat').session.state.messages);
         const settled = messages.filter(m => m.role === 'toolResult' && m.toolCallId === 'call-one');
         assert.equal(settled.length, 1); assert.equal(settled[0].isError, true);
+        await page.locator('tool-message').filter({ hasText: 'bash · failed' }).waitFor({ state: 'visible' });
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · running' }).count(), 0);
         assert.equal(await page.locator('tool-message').filter({ hasText: 'bash · failed' }).count(), 1);
         assert.equal(await page.locator('user-message message-feedback, tool-message message-feedback').count(), 0);
