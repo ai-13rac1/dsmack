@@ -50,18 +50,23 @@ contract Canary {
 
     /// Entries are append-only; a zero image/manifest admits any. Funds return only after `until`.
     /// Guest/Owner keys live in the guest, so an unbound image would let the owner boot one that leaks its key.
-    function arm(Kind kind, bytes32 build, bytes32 image, bytes32 manifest, uint64 until) public payable returns (uint256 id) {
+    function arm(Kind kind, bytes32 build, bytes32 image, bytes32 manifest, uint64 until) external payable returns (uint256) {
+        require(kind != Kind.Oracle, "kind");
+        return push(kind, build, image, manifest, until);
+    }
+
+    function armOracle(bytes32 build, bytes32 image, bytes32 manifest, bytes32 caller, uint64 until) external payable returns (uint256 id) {
+        require(caller != 0, "unbound caller");
+        oracleCaller[id = push(Kind.Oracle, build, image, manifest, until)] = caller;
+    }
+
+    function push(Kind kind, bytes32 build, bytes32 image, bytes32 manifest, uint64 until) internal returns (uint256 id) {
         require(msg.value > 0 && until >= block.timestamp + 90 days && build != 0, "terms");
         require(kind == Kind.Forgery || kind == Kind.Runner || image != 0, "unbound image");
         require((kind != Kind.Owner && kind != Kind.Oracle) || manifest != 0, "unbound manifest");
         id = entries.length;
         entries.push(Entry(kind, build, image, manifest, msg.sender, until, msg.value, false));
         emit Armed(id, kind, build, image, manifest, msg.value, until);
-    }
-
-    function armOracle(bytes32 build, bytes32 image, bytes32 manifest, bytes32 caller, uint64 until) external payable returns (uint256 id) {
-        require(caller != 0, "unbound caller");
-        oracleCaller[id = arm(Kind.Oracle, build, image, manifest, until)] = caller;
     }
 
     function forgeryContext(uint256 id, address claimant) public view returns (bytes32) {
