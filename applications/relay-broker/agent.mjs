@@ -1,7 +1,7 @@
 import { InferenceError } from "./inference.mjs";
 import { rankNodes } from "./scheduler.mjs";
 import { peerBytes } from "./attestation.mjs";
-import { signGrant } from "./grants.mjs";
+import { canonical, signGrant } from "./grants.mjs";
 import { receiptSigner } from "../payments/schema.mjs";
 import { accrue } from "./payments.mjs";
 
@@ -81,6 +81,7 @@ export class AgentSessions {
       node: s.node, placement: s.placement, handoverAt: s.node.admit_until, setupUntil: s.setupUntil,
       closedReason: s.closedReason ?? s.stopReason, seconds: s.grant.seconds, grant: s.grant,
       guestSeconds: s.guestSeconds, activeBudgetSeconds: s.activeBudgetSeconds ?? s.grant.seconds,
+      ...(s.maxSpendNanoUsd !== undefined ? { maxSpendNanoUsd: s.maxSpendNanoUsd, operationId: s.operationId } : {}),
       stopReason: s.stopReason, rateNanoUsdPerSecond: s.rateNanoUsdPerSecond, browse: s.browse,
       active: this.active(s),
       endRequested: !!s.endRequested, usageUnresolved: !s.final && !!s.receiptSeen && s.grant.expires_at <= this.b.now(), credit: this.b.inference.summary(s.wallet),
@@ -91,7 +92,18 @@ export class AgentSessions {
     need(typeof r.conversationId === "string" && r.conversationId.length > 0 && r.conversationId.length <= 128,
       "BAD_REQUEST", "conversation ID required");
     need(peerBytes(r.client_peer).length === 38, "BAD_REQUEST", "inline Ed25519 browser identity required");
+    const capped = r.maxSpendNanoUsd !== undefined || r.operationId !== undefined;
+    need(!capped || (typeof r.maxSpendNanoUsd === "string" && /^[1-9][0-9]{0,38}$/.test(r.maxSpendNanoUsd) &&
+      typeof r.operationId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(r.operationId)),
+      "BAD_REQUEST", "spend cap requires positive decimal maxSpendNanoUsd and operation UUID");
+    const constraints = capped ? canonical({ conversationId: r.conversationId, client_peer: r.client_peer,
+      node_peer: r.node_peer, browse: r.browse ?? null, maxSpendNanoUsd: r.maxSpendNanoUsd }) : undefined;
     return await b.payments.serial(async () => {
+      const prior = capped && Object.values(b.payments.state.agentSessions ?? {}).find(s => s.wallet === wallet && s.operationId === r.operationId);
+      if (prior) {
+        need(prior.openConstraints === constraints, "OPERATION_CONFLICT", "operation already names different session constraints", 409);
+        return this.view(prior);
+      }
       await this.releaseUnused();
       const existing = Object.values(b.payments.state.agentSessions ?? {});
       // An expired stay can still be sealing its workspace before its final
@@ -120,6 +132,8 @@ export class AgentSessions {
         token: crypto.randomUUID().replaceAll("-", "") };
       const rate = base + BigInt(browse.nanoUsdPerSecond);
       const available = BigInt(b.inference.summary(wallet).remainingNanoUsd);
+      const cap = capped ? BigInt(r.maxSpendNanoUsd) : undefined;
+      need(cap === undefined || cap >= 60n * rate, "BUDGET_TOO_SMALL", "spend cap cannot cover the actual rate and 60 second minimum", 402);
       // Wall lifetime belongs to the guest. A small rolling reservation funds
       // active tool seconds without locking model credit for the whole stay.
       const expires = Math.min(b.now() + 3600,
@@ -130,6 +144,7 @@ export class AgentSessions {
       const grant = await signGrant(b.key, { client_peer: r.client_peer,
         relay_peer: node.relay_peer, unit: "seconds", seconds, expires_at: expires });
       const s = { wallet, conversationId: r.conversationId, node, placement, browse,
+        ...(capped ? { maxSpendNanoUsd: r.maxSpendNanoUsd, operationId: r.operationId, openConstraints: constraints } : {}),
         grant, guestSeconds: 0, activeBudgetSeconds, rateNanoUsdPerSecond: String(rate),
         reservedNanoUsd: String(BigInt(activeBudgetSeconds) * rate), final: false, openedAt: b.now(), setupUntil: Math.min(b.now() + 90, expires) };
       await this.save({ agentSessions: { ...b.payments.state.agentSessions, [grant.grant_id]: s } });
@@ -193,6 +208,9 @@ export class AgentSessions {
         "GUEST_USAGE", "guest seconds must be monotonic and within the active reserved budget", 409);
       need(!s.final, "SESSION_CLOSED", "session receipt is already final", 409);
       const rate = BigInt(s.rateNanoUsdPerSecond), billed = Math.max(60, used), charge = BigInt(billed - (s.billedSeconds ?? 0)) * rate;
+      const capSeconds = s.maxSpendNanoUsd === undefined ? s.grant.seconds : Number(BigInt(s.maxSpendNanoUsd) / rate > BigInt(s.grant.seconds)
+        ? BigInt(s.grant.seconds) : BigInt(s.maxSpendNanoUsd) / rate);
+      need(billed <= capSeconds, "GUEST_USAGE", "guest charge exceeds signed session cap", 409);
       const account = b.inference.account(s.wallet);
       const left = BigInt(s.reservedNanoUsd) - charge;
       need(left >= 0n, "GUEST_USAGE", "guest charge exceeds its reservation", 409);
@@ -201,12 +219,12 @@ export class AgentSessions {
       let reserved = final ? 0n : left;
       if (!final && !stopReason) {
         const free = BigInt(b.inference.summary(s.wallet).remainingNanoUsd);
-        const cap = BigInt(Math.max(0, Math.min(used + activeWindowSeconds, s.grant.seconds) - billed)) * rate;
+        const cap = BigInt(Math.max(0, Math.min(used + activeWindowSeconds, capSeconds) - billed)) * rate;
         const affordable = left + (free > 0n ? free : 0n);
         reserved = (cap < affordable ? cap : affordable) / rate * rate;
       }
-      const activeBudgetSeconds = final ? s.activeBudgetSeconds : Math.min(s.grant.seconds, billed + Number(reserved / rate));
-      const reason = stopReason ?? (activeBudgetSeconds <= used ? "credit" : undefined);
+      const activeBudgetSeconds = final ? s.activeBudgetSeconds : Math.min(capSeconds, billed + Number(reserved / rate));
+      const reason = stopReason ?? (activeBudgetSeconds <= used ? (s.maxSpendNanoUsd !== undefined && used >= capSeconds ? "budget" : "credit") : undefined);
       const allocation = accrue(b.payments.state, s.wallet, s.node.payments.operator, charge, b.now());
       const updated = { ...s, receipt, signedReceipt: r, billedSeconds: billed, receiptSeen: true, guestSeconds: used, final: final,
         activeBudgetSeconds, reservedNanoUsd: String(reserved), stopReason: reason,

@@ -157,7 +157,7 @@ export class Inference {
       : action === "chat"
       ? ["sessionId", "body", "headers"]
       : action === "agent-open"
-      ? ["conversationId", "client_peer", "node_peer", "browse"]
+      ? ["conversationId", "client_peer", "node_peer", "browse", "maxSpendNanoUsd", "operationId"]
       : ["agent-status", "agent-end"].includes(action)
       ? ["sessionId"]
       : [];
@@ -187,7 +187,7 @@ export class Inference {
       "wallet signature does not verify",
       403,
     );
-    const repeatable = ["prepare", "chat"].includes(action);
+    const repeatable = ["prepare", "chat"].includes(action) || (action === "agent-open" && r.maxSpendNanoUsd !== undefined && r.operationId !== undefined);
     const requestHash = repeatable ? hex(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(canonical(unsigned))))) : undefined;
     await this.payments.syncBalance?.(wallet);
     await this.payments.serial(async () => {
