@@ -6,7 +6,6 @@ import {
   require,
   runNode,
 } from "../payments/schema.mjs";
-import { ChainReader } from "../payments/chain-reader.mjs";
 import { admissionChain } from "../payments/admission.mjs";
 import { verifyRelay } from "./attestation.mjs";
 import { operatorsOf, ownershipDomain } from "./ownership.mjs";
@@ -20,9 +19,8 @@ export class Payments {
       state = { grants: {}, receipts: {} },
       save,
       now = () => Math.floor(Date.now() / 1000),
-      quorum = undefined,
+      chain,
       ownership,
-      admission,
     },
   ) {
     this.cfg = cfg;
@@ -30,10 +28,9 @@ export class Payments {
     this.state = state;
     this.save = save;
     this.now = now;
-    this.chain = quorum ?? new ChainReader(cfg);
+    // Every chain read (guest admission, classes, deposit credit) is Helios-verified: a HeliosReader in production.
+    this.chain = chain;
     this.ownership = ownership;
-    // Guest admission reads (keys, CDRegistry, canary, class, broker signer) come only from Helios (HeliosReader).
-    this.admission = admission;
     this.pending = Promise.resolve();
     this.challenges = new Map();
   }
@@ -54,7 +51,7 @@ export class Payments {
   }
   async register(r, cfg) {
     this.brokerCfg = cfg;
-    const s = await this.admission.snapshot();
+    const s = await this.chain.snapshot();
     const checked = await verifyRelay(
       r,
       cfg,

@@ -33,11 +33,12 @@ AppleAttestRegistry (`keys(kid)`); the broker refuses a config with
 `enrollments`, so a rotated key needs an on-chain `enroll` and a MacLink, never a
 broker change. A paid guest is admitted only if the key that signed its
 attestation has a verified MacLink (`/fleet/link`) to its class operator.
-Guest admission (paid and unpaid) reads App Attest keys, CDRegistry, Canary, deployed
-code and the UsageEscrow class only through `chainRead`, the layover-chain service
+Guest admission (paid and unpaid), `/payments/classes` and deposit credit read App Attest
+keys, CDRegistry, Canary, deployed code, the UsageEscrow class and `deposits` only
+through `chainRead`, the layover-chain service
 (Helios OP-stack light client): every read is pinned to one verified block hash and a
-reply not marked `helios-opstack` is refused (`payments/helios-reader.mjs`). Deposit
-credit still reads through the RPC failover in ADR 0006.
+reply not marked `helios-opstack` is refused (`payments/helios-reader.mjs`). The
+continuity anchor still uses its own RPC provider.
 
 Configure the prepaid USDC `payments` block as in `../payments/README.md`. Add the
 `inference` block from `config.inference.example.json`, including allowed

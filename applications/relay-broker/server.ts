@@ -62,7 +62,7 @@ async function load(ctx: Context) {
       state,
       save: (v: object) => atomicSave(path, v),
       ownership: () => readOwnership(ctx.dataDir + "/fleet.json"),
-      admission: helios,
+      chain: helios,
     });
   }
   let inference, providerEnvironment;

@@ -36,6 +36,8 @@ function layoverChain(registry, broker, operator, tamper = (j) => j) {
     if (to === escrow && sel === abi.getFunction("brokerSigner").selector) return abi.encodeFunctionResult("brokerSigner", [broker.address]).slice(2);
     if (to === escrow && sel === abi.getFunction("getNode").selector) return abi.encodeFunctionResult("getNode", [arg === node.slice(2)
       ? [operator, 1, "0x" + hex(manifest), "0x" + hex(image)] : ["0x" + "00".repeat(20), 0, "0x" + "00".repeat(32), "0x" + "00".repeat(32)]]).slice(2);
+    if (to === escrow && sel === abi.getFunction("deposits").selector) return abi.encodeFunctionResult("deposits", [5000000n]).slice(2);
+    if (to === escrow && sel === abi.getFunction("exitRequestedAt").selector) return abi.encodeFunctionResult("exitRequestedAt", [0n]).slice(2);
     throw Error("unexpected eth_call " + to + " " + sel);
   };
   return async (url) => {
@@ -85,7 +87,7 @@ async function setup() {
     admissionCode: [ATTEST, REGISTRY, CANARY].map((address) => ({ address, codeHash: keccak256(code) })) };
   const brokerCfg = { workloads: [{ manifest_sha256: hex(manifest), os_image_hash: hex(image), cdhash: hex(cdhash), service: "node" }] };
   const broker = new Payments({ cfg, key: brokerKey, now: () => NOW, save: async () => {},
-    quorum: {}, admission: new HeliosReader({ escrow, codeHash: keccak256(code), chainRead: CHAIN_READ }), ownership: async () => state });
+    chain: new HeliosReader({ escrow, codeHash: keccak256(code), chainRead: CHAIN_READ }), ownership: async () => state });
   globalThis.fetch = layoverChain(registry, brokerKey, operator.address);
   const tamper = (f) => { globalThis.fetch = layoverChain(registry, brokerKey, operator.address, f); };
   const admit = (r) => broker.register(r, brokerCfg);
@@ -155,4 +157,15 @@ test("admission reads only Helios-verified layover-chain answers for one pinned 
   await assert.rejects(admit(await guest(broker, key, operator.address)), /Helios head is 600 s old/);
   tamper((j) => j.code ? { ...j, code: "0x6001" } : j);
   await assert.rejects(admit(await guest(broker, key, operator.address)), /code mismatch/);
+});
+
+test("deposit credit is minted only from a Helios-verified deposits() read", async () => {
+  const { broker, tamper } = await setup();
+  const wallet = Wallet.createRandom().address.toLowerCase();
+  tamper((j) => j.result ? { ...j, verified_by: undefined } : j);
+  await assert.rejects(broker.syncBalance(wallet), /layover-chain \/call: HTTP 200/);
+  assert.equal(broker.state.inferenceCredit?.[wallet], undefined);
+  tamper((j) => j);
+  await broker.syncBalance(wallet);
+  assert.equal(broker.state.inferenceCredit[wallet].grantedNanoUsd, "5000000000");
 });
