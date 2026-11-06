@@ -57,14 +57,13 @@ class MacWorkloadTests(unittest.TestCase):
         self.assertEqual(manifest['base_vm']['vcpus'], 2)
 
     def test_operator_selects_a_registered_measured_monitor(self):
-        for name in ('none', 'baseline-pg2'):
-            measured = json.loads(self.generate(tunnel_index=INDEX, monitor=name))
-            env = json.loads(measured['docker_compose_file'])['services']['node']['environment']
-            policy = json.loads(env['DSMACK_MONITOR_POLICY'])
-            self.assertEqual(policy['name'], name)
-            if name == 'baseline-pg2':
-                self.assertEqual(policy['hooks'], ['first-user-prompt', 'model-response-with-tool-calls'])
-                self.assertEqual(policy['device'], 'cpu')
+        none = json.loads(json.loads(self.generate(tunnel_index=INDEX, monitor='none'))['docker_compose_file'])['services']['node']['environment']
+        self.assertNotIn('DSMACK_MONITOR_POLICY', none)
+        measured = json.loads(self.generate(tunnel_index=INDEX, monitor='baseline-pg2'))
+        policy = json.loads(json.loads(measured['docker_compose_file'])['services']['node']['environment']['DSMACK_MONITOR_POLICY'])
+        self.assertEqual(policy['name'], 'baseline-pg2')
+        self.assertEqual(policy['hooks'], ['first-user-prompt', 'model-response-with-tool-calls'])
+        self.assertEqual(policy['device'], 'cpu')
         with self.assertRaises(KeyError):
             self.generate(tunnel_index=INDEX, monitor='operator-spy')
 

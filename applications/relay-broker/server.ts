@@ -299,6 +299,9 @@ async function dispatchRequest(req: Request, b: Broker, ctx: Context | undefined
       if (!sync) return finish(Response.json({ error: "sync not configured" }, { status: 503 }));
       try { response = Response.json(await sync.call(path.slice(6), await body(req, 3 * 1024 * 1024))); }
       catch (e) { if (e instanceof Error && "status" in e) return finish(Response.json({ error: e.message }, { status: Number(e.status) })); throw e; }
+    } else if (path.startsWith("/agent/browse/") && req.method === "GET") {
+      if (!b.payments) throw new InferenceError("PROVIDER_NOT_CONFIGURED", "agent credit is not configured", 503);
+      response = Response.json(new AgentSessions(b).browsePolicy(path.slice("/agent/browse/".length), new URL(req.url).searchParams.get("publisher")));
     } else if (path.startsWith("/agent/") && req.method === "POST") {
       if (!b.inference || !b.payments) throw new InferenceError("PROVIDER_NOT_CONFIGURED", "agent credit is not configured", 503);
       const sessions = new AgentSessions(b, () => readFleet(ctx?.dataDir ? ctx.dataDir + "/fleet.json" : undefined, b.now())), request = await body(req);

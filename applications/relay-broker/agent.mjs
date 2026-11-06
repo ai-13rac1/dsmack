@@ -10,6 +10,25 @@ const need = (ok, code, message, status = 400) => {
 };
 const id = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 const activeWindowSeconds = 60;
+const BROWSE = ["none", "named", "open"];
+const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
+
+// The stay names how open its couch's browser is; the host's signed heartbeat policy (operator.json "browse") bounds it.
+// A host without a browse policy allows none. Package and operator hosts are always open and are not part of these terms.
+export function browseTerms(host = { default: "none", max: "none" }, ask = { mode: host.default, hosts: [] }) {
+  need(ask && BROWSE.includes(ask.mode) && Array.isArray(ask.hosts) && ask.hosts.length <= 64 && ask.hosts.every(h => HOST.test(h)) &&
+    (ask.mode === "named" || ask.hosts.length === 0), "BAD_REQUEST", "browse must be {mode: none|named|open, hosts: [lowercase hostnames]} (hosts only for named)");
+  need(BROWSE.indexOf(ask.mode) <= BROWSE.indexOf(host.max), "BROWSE_REFUSED", `this host allows browse up to ${host.max}`, 403);
+  return { mode: ask.mode, hosts: ask.hosts, nanoUsdPerSecond: String(browseRate(host, ask)) };
+}
+
+// Pricing hook (the amin's pricing replaces this): the host's posted surcharge for widening past its default.
+export function browseRate(host, ask) {
+  const price = host.price ?? {};
+  if (ask.mode === "open" && host.default !== "open") return BigInt(price.open_nano_usd_per_second ?? 0);
+  if (ask.mode === "named") return BigInt(price.named_host_nano_usd_per_second ?? 0) * BigInt(ask.hosts.length);
+  return 0n;
+}
 
 // A session reserves guest time from the same wallet ledger as encrypted model
 // calls. Only the receipt key bound by the guest attestation can charge usage.
@@ -57,7 +76,7 @@ export class AgentSessions {
       node: s.node, placement: s.placement, handoverAt: s.node.admit_until, setupUntil: s.setupUntil,
       closedReason: s.closedReason ?? s.stopReason, seconds: s.grant.seconds, grant: s.grant,
       guestSeconds: s.guestSeconds, activeBudgetSeconds: s.activeBudgetSeconds ?? s.grant.seconds,
-      stopReason: s.stopReason, rateNanoUsdPerSecond: s.rateNanoUsdPerSecond,
+      stopReason: s.stopReason, rateNanoUsdPerSecond: s.rateNanoUsdPerSecond, browse: s.browse,
       active: this.active(s),
       endRequested: !!s.endRequested, usageUnresolved: !s.final && !!s.receiptSeen && s.grant.expires_at <= this.b.now(), credit: this.b.inference.summary(s.wallet),
     };
@@ -84,13 +103,17 @@ export class AgentSessions {
       need(node?.payments?.receiptSigner && node.attestation?.nodeBinding?.binding.receiptSigner?.toLowerCase() === node.payments.receiptSigner.toLowerCase(), "NODE_NOT_LIVE", "attested guest is unavailable", 404);
       // Read the signed heartbeat and recheck occupancy inside the same ledger
       // transaction that reserves credit. Client placement hints are ignored.
-      const ranked = rankNodes(b.live().filter(n => n.kind === "compute"), await this.readFleet(),
+      const fleet = await this.readFleet();
+      const ranked = rankNodes(b.live().filter(n => n.kind === "compute"), fleet,
         (candidate, placement) => this.available(candidate, placement), { now: b.now() });
       const offered = ranked.find(candidate => candidate.relay_peer === node.relay_peer && candidate.available);
       need(offered, "GUEST_BUSY", "guest logical slot is busy or no longer offered", 409);
       const placement = offered.placement;
-      const rate = BigInt(b.cfg.payments?.prices?.S1?.nanoUsdPerSecond ?? "15000");
-      need(rate > 0n, "BAD_CONFIG", "guest second price must be positive", 503);
+      const base = BigInt(b.cfg.payments?.prices?.S1?.nanoUsdPerSecond ?? "15000");
+      need(base > 0n, "BAD_CONFIG", "guest second price must be positive", 503);
+      const browse = { ...browseTerms(fleet.find(m => m.publisher === placement.publisher)?.config?.browse, r.browse),
+        token: crypto.randomUUID().replaceAll("-", "") };
+      const rate = base + BigInt(browse.nanoUsdPerSecond);
       const available = BigInt(b.inference.summary(wallet).remainingNanoUsd);
       // Wall lifetime belongs to the guest. A small rolling reservation funds
       // active tool seconds without locking model credit for the whole stay.
@@ -101,12 +124,21 @@ export class AgentSessions {
       need(activeBudgetSeconds >= 60, "CREDIT_EXHAUSTED", "wallet cannot cover the 60 second minimum", 402);
       const grant = await signGrant(b.key, { client_peer: r.client_peer,
         relay_peer: node.relay_peer, unit: "seconds", seconds, expires_at: expires });
-      const s = { wallet, conversationId: r.conversationId, node, placement,
+      const s = { wallet, conversationId: r.conversationId, node, placement, browse,
         grant, guestSeconds: 0, activeBudgetSeconds, rateNanoUsdPerSecond: String(rate),
         reservedNanoUsd: String(BigInt(activeBudgetSeconds) * rate), final: false, openedAt: b.now(), setupUntil: Math.min(b.now() + 90, expires) };
       await this.save({ agentSessions: { ...b.payments.state.agentSessions, [grant.grant_id]: s } });
       return this.view(s);
     });
+  }
+  // The Mac's CONNECT proxy asks which policy a stay's browse token carries. It answers only for a stay placed on that
+  // Mac and only while the stay is active, so a token works neither on another host nor after its stay ends.
+  browsePolicy(token, publisher) {
+    need(id(token) && typeof publisher === "string", "BAD_REQUEST", "browse token and publisher required");
+    const s = Object.values(this.b.payments.state.agentSessions ?? {}).find(v => v.browse?.token === token);
+    need(s && s.placement?.publisher.toLowerCase() === publisher.toLowerCase() && this.active(s) && !s.endRequested,
+      "BROWSE_UNKNOWN", "no active stay on this Mac holds this browse token", 404);
+    return { mode: s.browse.mode, hosts: s.browse.hosts, expires_at: s.grant.expires_at };
   }
   async status(r, end = false) {
     const b = this.b, wallet = await b.inference.authorized(r, end ? "agent-end" : "agent-status");

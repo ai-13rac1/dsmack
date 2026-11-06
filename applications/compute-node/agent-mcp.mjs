@@ -12,11 +12,14 @@ import { createBashTool, createReadTool, createWriteTool, createEditTool, toolCa
 
 import { WorkspaceSnapshots } from "./workspace.mjs";
 import { MonitorSession, failedMonitorResult } from "./monitor-client.mjs";
+import { browseForwarder, browsePolicy } from "./browse-forwarder.mjs";
 
 export const COMMAND_TIMEOUT_SECONDS = 120;
 export const OUTPUT_CAP_BYTES = 50 * 1024;
 export const RAW_OUTPUT_CAP_BYTES = 1024 * 1024;
 const exec = promisify(execFile);
+// The stay's browse token arrives from the client in _meta; policy is what the operator proxy reports it enforces.
+export const browse = { token: null, policy: { mode: "none", hosts: [] } };
 
 export async function workspacePath(root, input) {
   const path = resolve(input);
@@ -66,8 +69,7 @@ export function createWorkspaceTools(root) {
       const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", command], {
         cwd: working, detached: true,
         env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root, TMPDIR: resolve(root, ".tmp"), LANG: "C.UTF-8", TERM: "dumb",
-          HTTP_PROXY: process.env.HTTPS_PROXY || "", HTTPS_PROXY: process.env.HTTPS_PROXY || "", ALL_PROXY: process.env.HTTPS_PROXY || "",
-          http_proxy: process.env.HTTPS_PROXY || "", https_proxy: process.env.HTTPS_PROXY || "", all_proxy: process.env.HTTPS_PROXY || "" },
+          ...Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].map((k) => [k, process.env.AGENT_TOOL_PROXY || ""])) },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let bytes = 0, failure;
@@ -99,8 +101,9 @@ export function environment(root = "/workspace") {
     persistence: "This conversation’s files persist as numbered encrypted workspace saves and restore when it moves to a new guest. Dependencies, caches and generated build output are excluded.",
     commandTimeoutSeconds: COMMAND_TIMEOUT_SECONDS, outputCapBytes: OUTPUT_CAP_BYTES, rawOutputCapBytes: RAW_OUTPUT_CAP_BYTES,
     outputCapLines: 2000, idleTimeoutSeconds: 300, piVersion, mcpVersion: "2026-07-28", mcpSdkVersion: "2.4.0",
-    allowlist: JSON.parse(process.env.AGENT_NETWORK_ALLOWLIST || "[]"), proxy: process.env.HTTPS_PROXY || "",
-    network: "All outbound traffic is restricted by the measured guest firewall to the operator CONNECT proxy. The proxy accepts only its configured host allowlist; direct Internet connections are blocked.",
+    allowlist: JSON.parse(process.env.AGENT_NETWORK_ALLOWLIST || "[]"), proxy: process.env.HTTPS_PROXY || "", toolProxy: process.env.AGENT_TOOL_PROXY || "",
+    browse: browse.policy,
+    network: "All outbound traffic is restricted by the measured guest firewall to the operator CONNECT proxy. The proxy admits the operator hosts and package hosts in allowlist, plus what this stay's browse policy allows (browse, as reported by the proxy for this stay's token); direct Internet connections are blocked.",
     confinement: "Tools run as uid 1000 with no supplementary groups in a container with a read-only root filesystem. /workspace is the writable application directory; file tools reject paths or symlinks outside it. Shell commands can read installed system runtimes. Attestation socket and daemon state are restricted to root.",
   };
 }
@@ -114,6 +117,12 @@ export function createAgentServer(root, options = {}) {
   server.setRequestHandler("tools/list", async () => ({ tools: toolCatalog().map(({ label, ...tool }) => ({ ...tool, title: label })) }));
   server.setRequestHandler("tools/call", (request, ctx) => serial(async () => {
     const { name, arguments: args = {}, _meta } = request.params;
+    const token = _meta?.["dsmack/browse"];
+    if (typeof token === "string" && /^[0-9a-f]{32}$/.test(token) && token !== browse.token) {
+      const previous = browse.token;
+      browse.token = token;
+      try { browse.policy = await browsePolicy(options.browsePort); } catch (error) { browse.token = previous; throw error; }
+    }
     if (name === "dsmack_monitor") {
       await monitor.preflight(args.prompt);
       return { content: [{ type: "text", text: "Pre-flight checked" }] };
@@ -189,6 +198,10 @@ export async function listen({ root = "/workspace", socket = process.env.AGENT_M
   if (process.getuid() === 0) {
     await chown(socket, 1000, 1000);
     process.setgroups([]); process.setgid(1000); process.setuid(1000);
+  }
+  if (process.env.HTTPS_PROXY) {
+    await browseForwarder(process.env.HTTPS_PROXY, () => browse.token);
+    process.env.AGENT_TOOL_PROXY = "http://127.0.0.1:18480";
   }
   await initializeWorkspace(root);
   ready();

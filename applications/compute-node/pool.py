@@ -55,6 +55,13 @@ def operator_config(path, host, max_slots=None):
     for name, value, minimum in fields:
         if type(value) is not int or value < minimum:
             raise ValueError(f'operator {name} must be an integer >= {minimum}')
+    browse, modes = config.get('browse', {'default': 'none', 'max': 'none'}), ['none', 'named', 'open']
+    price = browse.get('price', {})
+    if (set(browse) - {'default', 'max', 'price'} or browse.get('default') not in modes or browse.get('max') not in modes
+            or modes.index(browse['default']) > modes.index(browse['max'])
+            or set(price) - {'open_nano_usd_per_second', 'named_host_nano_usd_per_second'}
+            or not all(type(v) is str and v.isdigit() for v in price.values())):
+        raise ValueError('operator browse requires default <= max in none|named|open and decimal-string prices')
     if max_slots is not None:
         if type(max_slots) is not int or max_slots < 1:
             raise ValueError('max slots must be a positive integer')
