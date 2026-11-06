@@ -13,7 +13,7 @@ async function registerDiagnostic(b, r) {
   const keys = ["relay_peer", "relay_maddr", "manifest_sha256", "os_image_hash", "cdhash", "receipt_key", "secret_key", "admit_until"];
   const out = { ...Object.fromEntries(keys.filter((k) => r[k] !== undefined).map((k) => [k, r[k]])), kind: "compute", proof: r.attestation,
     attestation: { status: "verified", ...checked }, expires_at: b.now() + limits.compute_lease_seconds, operator_diagnostic: true };
-  b.relays.set(r.relay_peer, out);
+  b.relays.set(r.relay_peer, out); b.seen.set(r.relay_peer, b.now());
   return out;
 }
 
@@ -27,6 +27,7 @@ export class Broker {
     this.cfg = cfg; this.chain = chain; this.key = key;
     this.credits = credits; this.saveCredits = saveCredits; this.now = now;
     this.relays = new Map();
+    this.seen = new Map(); this.startedAt = now();
     this.pending = Promise.resolve();
   }
 
@@ -34,6 +35,12 @@ export class Broker {
     const now = this.now();
     for (const [id, r] of this.relays) if (r.expires_at <= now) this.relays.delete(id);
     return [...this.relays.values()].filter((r) => !r.admit_until || r.admit_until > now);
+  }
+
+  // A running guest re-registers every 25-30 s, including while it seals past admit_until. It counts as gone only after
+  // grant_seconds without a registration, so a broker restart (relays live in memory) or a shorter network blip closes nothing.
+  gone(peer) {
+    return this.now() - Math.max(this.startedAt, this.seen.get(peer) ?? 0) > limits.grant_seconds;
   }
 
   async register(r) {
@@ -59,7 +66,7 @@ export class Broker {
         out.admit_until = r.admit_until;
       }
     }
-    this.relays.set(r.relay_peer, out);
+    this.relays.set(r.relay_peer, out); this.seen.set(r.relay_peer, now);
     return out;
   }
 
