@@ -68,7 +68,7 @@ export function createWorkspaceTools(root) {
       const working = await safe(cwd);
       const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", command], {
         cwd: working, detached: true,
-        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: root, TMPDIR: resolve(root, ".tmp"), LANG: "C.UTF-8", TERM: "dumb",
+        env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: resolve(root, "state/home"), TMPDIR: resolve(root, "state/tmp"), LANG: "C.UTF-8", TERM: "dumb",
           ...Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].map((k) => [k, process.env.AGENT_TOOL_PROXY || ""])) },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -104,7 +104,7 @@ export function environment(root = "/workspace") {
     allowlist: JSON.parse(process.env.AGENT_NETWORK_ALLOWLIST || "[]"), proxy: process.env.HTTPS_PROXY || "", toolProxy: process.env.AGENT_TOOL_PROXY || "",
     browse: browse.policy,
     network: "All outbound traffic is restricted by the measured guest firewall to the operator CONNECT proxy. The proxy admits the operator hosts and package hosts in allowlist, plus what this stay's browse policy allows (browse, as reported by the proxy for this stay's token); direct Internet connections are blocked.",
-    confinement: "Tools run as uid 1000 with no supplementary groups in a container with a read-only root filesystem. /workspace is the writable application directory; file tools reject paths or symlinks outside it. Shell commands can read installed system runtimes. Attestation socket and daemon state are restricted to root.",
+    confinement: "Tools run as uid 1000 with no supplementary groups in a container with a read-only root filesystem. /workspace is the writable application directory (256 MiB, saved with the workspace, not executable); /workspace/state is the 2 GiB executable build area (HOME and TMPDIR, not saved). File tools reject paths or symlinks outside /workspace. Shell commands can read installed system runtimes. Attestation socket and daemon state are restricted to root.",
   };
 }
 
@@ -172,8 +172,8 @@ export function createAgentServer(root, options = {}) {
 }
 
 export async function initializeWorkspace(root) {
-  await mkdir(resolve(root, ".tmp"), { recursive: true });
-  process.env.TMPDIR = resolve(root, ".tmp");
+  for (const dir of [".tmp", "state/tmp", "state/home"]) await mkdir(resolve(root, dir), { recursive: true });
+  process.env.TMPDIR = resolve(root, "state/tmp");
   await exec("git", ["init", "-q"], { cwd: root });
   await writeFile(resolve(root, ".git/info/exclude"), ".tmp/\nartifacts/\nstate/\n");
   await exec("git", ["-c", "user.name=Dsmack", "-c", "user.email=agent@dsmack.invalid", "commit", "--allow-empty", "-qm", "Initial workspace"], { cwd: root });

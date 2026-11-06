@@ -13,7 +13,7 @@ COPY applications/compute-node/dsmack-egress /usr/local/bin/dsmack-egress
 RUN chmod 0755 /usr/local/bin/dsmack-compute /usr/local/bin/dsmack-egress \
  && chmod -R a+rX /opt/compute-node \
  && chmod 0700 /root \
- && rm -rf /tmp && ln -s /workspace/.tmp /tmp \
+ && rm -rf /tmp && ln -s /workspace/state/tmp /tmp \
  && ln -s /dev/shm /run/dsmack
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/dsmack-compute"]

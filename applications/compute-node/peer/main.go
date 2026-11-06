@@ -120,7 +120,7 @@ func serve(relay, brokerURL, brokerHex, cdhash, worker string, seconds int) (ser
 	if !ok || owner.Uid != 0 || private.Mode().Perm()&0077 != 0 {
 		return fmt.Errorf("attestation socket parent must be root-private")
 	}
-	for _, path := range []string{"/workspace/artifacts", "/workspace/state"} {
+	for _, path := range []string{"/workspace/artifacts"} {
 		if err := os.MkdirAll(path, 0700); err != nil {
 			return err
 		}
