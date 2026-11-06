@@ -1,3 +1,4 @@
+import { reportData } from "../../../dstack-compat/binding.mjs";
 import {
   cat,
   checkAssertion,
@@ -9,7 +10,8 @@ import {
 } from "../../../dstack-compat/secret-release/policy.mjs";
 import { bytesEqual, decodeCbor, require } from "./encoding.mjs";
 import { APP_ID, verifyEnrollment } from "./enrollment.mjs";
-import { paymentBinding, paymentRunId } from "./payments.mjs";
+import { paidReceiptKey, paymentRunId } from "./payments.mjs";
+import { monitorPolicy } from "../../egress-policy/monitor/registry.mjs";
 export { hex, unhex };
 const enc = new TextEncoder(),
   dec = new TextDecoder("utf-8", { fatal: true }),
@@ -139,7 +141,16 @@ async function assertion(proof, policy, enrollment, minCounter = 0) {
   );
   return { ...a, counter };
 }
-// policy.manifest is the exact approved manifest bytes, selected independently of discovery.
+// On-chain mode: the key is the one the attestation names, read from AppleAttestRegistry, which admitted it only with
+// an Apple-rooted attestation of an approved CDRegistry build. No per-device enrollment is pinned.
+async function chainEnrollment(proof, chain) {
+  const kid = (await decodeAttestation(unhex(proof))).key_id,
+    key = await chain.key(kid);
+  require(key.enrolled, "node key " + hex(kid) + " is not enrolled on chain");
+  return { kid, point: cat(Uint8Array.of(4), key.x, key.y), expires: key.expires * 1000 };
+}
+// policy.manifest is the exact approved manifest bytes, selected independently of discovery. A paid node also needs
+// policy.operatorsOf(kid): the operators whose MacLinks name the attesting key (owners.mjs brokerOwners).
 export async function verifyNode(registration, policy) {
   require(
     policy.manifest instanceof Uint8Array &&
@@ -158,6 +169,7 @@ export async function verifyNode(registration, policy) {
     "compose broker key/build",
   );
   const env = service.environment;
+  const monitor = await monitorPolicy(env);
   require(
     service.command[6] === "/opt/compute-node/agent-mcp.mjs" &&
       env?.AGENT_MCP_SOCKET === "/run/dsmack/agent-mcp.sock" &&
@@ -177,6 +189,7 @@ export async function verifyNode(registration, policy) {
     manifestHash: await hash(policy.manifest),
     image: manifest.base_vm.os_image_hash,
     agentEnvironment: env,
+    monitor,
   };
   require(
     registration.kind === "compute" && registration.cdhash === policy.cdhash &&
@@ -216,12 +229,18 @@ export async function verifyNode(registration, policy) {
       "CDRegistry address",
     );
   }
-  const enrollment = await verifyEnrollment(policy.enrollment, policy.cdhash);
   const enrollmentMode = policy.enrollmentMode ?? "on-chain";
   require(
     ["on-chain", "apple-root"].includes(enrollmentMode),
     "enrollment mode",
   );
+  const enrollment = enrollmentMode === "apple-root"
+    ? await verifyEnrollment(policy.enrollment, policy.cdhash)
+    : await chainEnrollment(
+      registration.proof ?? registration.attestation,
+      policy.chain ??
+        rpcChain(policy.rpc, policy.attest ?? ATTEST, policy.canary ?? CANARY),
+    );
   if (enrollmentMode === "apple-root") {
     const base = policy.chain ??
       rpcChain(policy.rpc, policy.attest ?? ATTEST, policy.canary ?? CANARY);
@@ -244,12 +263,7 @@ export async function verifyNode(registration, policy) {
     resolved,
     enrollment,
   );
-  let expected = cat(
-    await sha256(
-      cat(enc.encode("dsmack-compute-node/1"), peer, secret, receipt),
-    ),
-    new Uint8Array(32),
-  );
+  let receiptKeys = receipt, challenge = new Uint8Array(32);
   if (registration.payments) {
     const p = registration.payments;
     require(
@@ -257,11 +271,15 @@ export async function verifyNode(registration, policy) {
         /^[0-9a-f]{64}$/.test(p.challenge),
       "fresh node challenge",
     );
+    // The manifest names no Mac key: the run binds to the attesting key, which must be linked to the payee.
+    const kid = "0x" + hex(enrollment.kid);
     require(
-      p.enrollmentKeyId.toLowerCase() === "0x" + hex(enrollment.kid) &&
-        p.runId.toLowerCase() ===
-          paymentRunId(p.enrollmentKeyId, p.runNonce).toLowerCase(),
-      "payment run/key",
+      p.runId.toLowerCase() === paymentRunId(kid, p.runNonce).toLowerCase(),
+      "payment run is not bound to the attesting key",
+    );
+    require(
+      (await policy.operatorsOf(kid)).includes(p.operator.toLowerCase()),
+      "node key " + kid + " has no MacLink to payment operator " + p.operator,
     );
     require(
       p.grantSigner.toLowerCase() === policy.grantSigner?.toLowerCase(),
@@ -274,18 +292,10 @@ export async function verifyNode(registration, policy) {
       p.buildId.toLowerCase() === "0x" + hex(await chain.buildId()),
       "payment build",
     );
-    expected = cat(
-      unhex(
-        paymentBinding(
-          p,
-          registration.relay_peer,
-          resolved.manifestHash,
-          resolved.image,
-        ).slice(2),
-      ),
-      await sha256(cat(expected, unhex(p.challenge))),
-    );
+    receiptKeys = cat(receipt, paidReceiptKey(p));
+    challenge = unhex(p.challenge);
   }
+  const expected = await reportData(peer, secret, receiptKeys, challenge);
   require(eq(a.report_data, expected), "node PeerId/secret/receipt binding");
   return {
     registration,

@@ -68,14 +68,14 @@ class BrokerPromotionTest(unittest.TestCase):
             root = Path(directory)
             (root / 'relay-broker.manifest.json').write_text(json.dumps({
                 'name':'relay-broker', 'runtime':'deno', 'entry':'applications/relay-broker/server.ts',
-                'isolation':'shared', 'mode':'attested', 'source':'tarball://relay-broker', 'env':{}, 'ref':'test-ref'}))
+                'isolation':'shared', 'mode':'attested', 'source':'tarball://relay-broker', 'env':{'DSTACK_SOCKET':'/run/broker/relay-broker/dstack.sock'}, 'ref':'test-ref'}))
             with tarfile.open(root / 'relay-broker.tgz', 'w:gz') as archive:
                 body = b'{"payments":{},"inference":{}}'
                 info = tarfile.TarInfo('applications/relay-broker/config.json')
                 info.size = len(body)
                 archive.addfile(info, io.BytesIO(body))
-            with patch.object(module, 'token', return_value='test-only'), patch.object(module, 'client', return_value=api), patch.object(module, 'wait_for_idle', side_effect=activity) as guard:
-                module.deploy(SimpleNamespace(prepared=root, evidence=root/'evidence', apply=True, url='unused', wait_idle_minutes=1))
+            with patch.object(module, 'source_ref', return_value='test-ref'), patch.object(module, 'token', return_value='test-only'), patch.object(module, 'client', return_value=api), patch.object(module, 'wait_for_idle', side_effect=activity) as guard:
+                module.deploy(SimpleNamespace(target='production', prepared=root, evidence=root/'evidence', apply=True, url='unused', wait_idle_minutes=1))
             guard.assert_called_once()
             self.assertTrue(promoted)
 
