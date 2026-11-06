@@ -69,8 +69,11 @@ func main() {
 	}
 	defer h.Close()
 	r := relay.DefaultResources()
-	r.MaxReservations = 8
-	r.MaxCircuits = 4
+	// Each slot overlaps two guest generations, all reserving from loopback, and the
+	// broker is the source of every attestation hop: size for 8 slots, not 4 guests.
+	r.MaxReservations = 16
+	r.MaxReservationsPerIP = 16
+	r.MaxCircuits = 16
 	r.Limit.Data = 1 << 30 // bounded allowance for workspace restore and an encrypted save
 	r.Limit.Duration = 65 * time.Minute
 	service, err := relay.New(h, relay.WithResources(r), relay.WithACL(logACL{}))
