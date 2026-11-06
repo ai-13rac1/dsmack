@@ -423,3 +423,70 @@ test("a broker restart or a blip shorter than grant_seconds keeps a started stay
  const closed=await status();
  assert.equal(closed.active,false);assert.equal(closed.closedReason,"guest-unreachable");
 });
+
+test("signed session cap includes browse and minimum before grant, and keeps fractional remainder",async()=>{
+ const f=await fixture({hostBrowse:{default:"none",max:"open",price:{open_nano_usd_per_second:"5000"}}});
+ const operationId=crypto.randomUUID(),base={conversationId:"budget",client_peer:peer,node_peer:peer,
+  browse:{mode:"open",hosts:[]},operationId};
+ await assert.rejects(f.sessions.open(await f.signed("agent-open",{...base,maxSpendNanoUsd:"1199999"})),e=>e.code==="BUDGET_TOO_SMALL");
+ assert.equal(Object.keys(f.payments.state.agentSessions??{}).length,0);
+ const s=await f.sessions.open(await f.signed("agent-open",{...base,maxSpendNanoUsd:"1400001"}));
+ assert.equal(s.rateNanoUsdPerSecond,"20000");assert.equal(s.maxSpendNanoUsd,"1400001");
+ await f.sessions.receipt(await f.receipt(s.sessionId,0));
+ f.advance(60);
+ const next=await f.sessions.receipt(await f.receipt(s.sessionId,60));
+ assert.equal(next.activeBudgetSeconds,70);
+ assert.equal(BigInt(f.inference.summary(f.wallet.address.toLowerCase()).spentNanoUsd)+BigInt(f.inference.summary(f.wallet.address.toLowerCase()).reservedNanoUsd),1400000n);
+ f.advance(10);
+ await assert.rejects(f.sessions.receipt(await f.receipt(s.sessionId,71)),e=>e.code==="GUEST_USAGE");
+ const stop=await f.sessions.receipt(await f.receipt(s.sessionId,70));
+ assert.equal(stop.stop,true);assert.equal(stop.reason,"budget");assert.equal(stop.activeBudgetSeconds,70);
+ const final=await f.receipt(s.sessionId,70,true);
+ await f.sessions.receipt(final);await f.sessions.receipt(final);
+ assert.equal(f.inference.summary(f.wallet.address.toLowerCase()).spentNanoUsd,"1400000");
+ assert.equal(f.inference.summary(f.wallet.address.toLowerCase()).reservedNanoUsd,"0");
+});
+
+test("capped opens persist idempotent operations across restart and reject retagging",async()=>{
+ const f=await fixture(),operationId=crypto.randomUUID();
+ const fields={conversationId:"budget",client_peer:peer,node_peer:peer,maxSpendNanoUsd:"900000",operationId};
+ const signed=await f.signed("agent-open",fields),s=await f.sessions.open(signed);
+ assert.equal((await f.sessions.open(signed)).sessionId,s.sessionId);
+ f.payments.state=JSON.parse(JSON.stringify(f.payments.state));
+ const restored=new AgentSessions(f.broker,f.readFleet);
+ assert.equal((await restored.open(await f.signed("agent-open",fields))).sessionId,s.sessionId);
+ for(const delta of [{maxSpendNanoUsd:"900001"},{node_peer:"different"},{conversationId:"different"},{client_peer:peer.slice(0,-1)+"y"}])
+  await assert.rejects(restored.open(await f.signed("agent-open",{...fields,...delta})),e=>e.code==="OPERATION_CONFLICT");
+ await f.sessions.receipt(await f.receipt(s.sessionId,0));
+ f.advance(60);
+ const stop=await f.sessions.receipt(await f.receipt(s.sessionId,60));
+ assert.equal(stop.reason,"budget");
+ await f.sessions.receipt(await f.receipt(s.sessionId,60,true));
+ const closed=await restored.open(await f.signed("agent-open",fields));
+ assert.equal(closed.sessionId,s.sessionId);assert.equal(closed.active,false);
+ assert.equal(Object.keys(f.payments.state.agentSessions).length,1);
+ assert.equal(f.inference.summary(f.wallet.address.toLowerCase()).spentNanoUsd,"900000");
+});
+
+test("cap authority requires both explicit fields and the wallet signature",async()=>{
+ const f=await fixture(),base={conversationId:"budget",client_peer:peer,node_peer:peer};
+ for(const extra of [{operationId:crypto.randomUUID()},{maxSpendNanoUsd:"900000"},{maxSpendNanoUsd:900000,operationId:crypto.randomUUID()},
+  {maxSpendNanoUsd:"0900000",operationId:crypto.randomUUID()}])
+  await assert.rejects(f.sessions.open(await f.signed("agent-open",{...base,...extra})),e=>e.code==="BAD_REQUEST");
+ const signed=await f.signed("agent-open",{...base,maxSpendNanoUsd:"900000",operationId:crypto.randomUUID()});
+ await assert.rejects(f.sessions.open({...signed,maxSpendNanoUsd:"999999"}),e=>e.code==="BUYER_SIGNATURE");
+});
+
+test("concurrent capped retry creates one durable reservation and failed save cannot return a grant",async()=>{
+ const f=await fixture(),fields={conversationId:"budget",client_peer:peer,node_peer:peer,maxSpendNanoUsd:"900000",operationId:crypto.randomUUID()};
+ const responses=await Promise.all([1,2].map(async()=>f.sessions.open(await f.signed("agent-open",fields))));
+ assert.equal(responses[0].sessionId,responses[1].sessionId);
+ assert.equal(f.inference.summary(f.wallet.address.toLowerCase()).reservedNanoUsd,"900000");
+ const broken=await fixture();
+ const request=await broken.signed("agent-open",{...fields,operationId:crypto.randomUUID()});
+ // Permit nonce persistence, then fail the session transaction.
+ const save=broken.payments.save;broken.payments.save=async state=>{if(state.agentSessions)throw Error("disk unavailable");await save(state);};
+ await assert.rejects(broken.sessions.open(request),/disk unavailable/);
+ assert.equal(Object.keys(broken.payments.state.agentSessions??{}).length,0);
+ assert.equal(broken.inference.summary(broken.wallet.address.toLowerCase()).spentNanoUsd,"0");
+});
