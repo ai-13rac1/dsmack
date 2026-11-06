@@ -106,5 +106,4 @@ Set up the tools as in [CONTRIBUTING.md](CONTRIBUTING.md), then:
 ./test.sh
 ```
 
-This runs Python, Node, Deno and Go suites, the Foundry projects and leaf circuit.
-The private-agent page README also gives the browser boundary test command.
+It runs `npm ci` where `node_modules` is missing or stale, installs Playwright's Chromium and Firefox, caches Deno imports, then runs every suite (python, node, private-agent-web with its browser tests, go, deno, contracts), each test under node or deno by its imports; `./test.sh private-agent-web` runs one.

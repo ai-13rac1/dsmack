@@ -58,6 +58,18 @@ class PoolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'differs from measured resource profile'):
             pool.measured_size(manifest, config)
 
+    def test_workload_image_is_read_from_the_workload_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workload = Path(tmp)
+            (workload/'compose-manifest.json').write_text(json.dumps({'base_vm': {'memory_mb': 4096, 'vcpus': 1}}))
+            (workload/'disk').mkdir()
+            (workload/'disk/workload.img').write_bytes(b'')
+            config = {'guest': {'mem_mib': 4096, 'vcpus': 1}}
+            with self.assertRaisesRegex(FileNotFoundError, 'workload.img'):
+                pool.validate_workload(workload, config)
+            (workload/'disk/workload.img').rename(workload/'workload.img')
+            self.assertEqual(pool.validate_workload(workload, config)['base_vm']['vcpus'], 1)
+
     def test_restart_preserves_full_broker_429_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

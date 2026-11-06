@@ -96,13 +96,21 @@ def sha(path):
     return digest.hexdigest()
 
 
+def validate_workload(workload, config):
+    """The workload half of validate_config: WORKLOAD/compose-manifest.json measured for this guest size, WORKLOAD/workload.img."""
+    manifest = json.loads((workload/'compose-manifest.json').read_bytes())
+    measured_size(manifest, config)
+    if not (workload/'workload.img').is_file():
+        raise FileNotFoundError(workload/'workload.img')
+    return manifest
+
+
 def validate_config(runner, workload, config):
     """Reject a staged release with missing or mismatched launch inputs before boot."""
     def match(path, expected):
         if sha(path) != expected:
             raise ValueError('SHA256 mismatch: ' + str(path))
-    manifest = json.loads((workload/'compose-manifest.json').read_bytes())
-    measured_size(manifest, config)
+    manifest = validate_workload(workload, config)
     base = manifest['base_vm']
     for filename, field in [('Image', 'kernel_sha256'), ('initramfs.cpio.gz', 'initrd_sha256'),
                             ('rootfs.squashfs.verity', 'rootfs_sha256'), ('metadata.json', 'metadata_sha256'),
@@ -113,7 +121,7 @@ def validate_config(runner, workload, config):
     for name in ('scratch', 'result'):
         match(runner/'runtime/base'/(name+'-template.ext4'), cmdline['dstack.'+name+'_template_sha256'])
     for path in (runner/'DsmackRunner.app/Contents/MacOS/dsmack-runner',
-                 runner/'runtime/helper/gvproxy-darwin', runner/'enrollment/keyId.txt', workload/'workload.img'):
+                 runner/'runtime/helper/gvproxy-darwin', runner/'enrollment/keyId.txt'):
         if not path.is_file():
             raise FileNotFoundError(path)
     return manifest
