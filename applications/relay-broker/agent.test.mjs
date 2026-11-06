@@ -5,6 +5,7 @@ import { Receipt, receiptDomain } from "../payments/schema.mjs";
 import { Payments } from "./payments.mjs";
 import { Inference, creditGrantPrefix } from "./inference.mjs";
 import { AgentSessions } from "./agent.mjs";
+import { Broker } from "./broker.mjs";
 import { canonical, signingKey } from "./grants.mjs";
 const hex = (v) => [...new Uint8Array(v)].map(v => v.toString(16).padStart(2,"0")).join("");
 const peer = "12D3KooWPXeq29kZzJxDgCA92X16PSiM5Bv1XxAshJ8wJzYv9k6x";
@@ -19,7 +20,7 @@ async function fixture({ starter = "250000000", lifetime = 1800, initialized = t
  const node={kind:"compute",relay_peer:peer,admit_until:now+lifetime,
   payments:{receiptSigner:receiptKey.address,operator:other.address},
   attestation:{nodeBinding:{binding:{receiptSigner:receiptKey.address}}}};
- const broker={payments,inference,key,cfg:{agent:agentCfg},live:()=>[node],now:()=>now};
+ const broker={payments,inference,key,cfg:{agent:agentCfg},live:()=>[node],gone:()=>false,now:()=>now};
  let fleetSlots;
  const readFleet=async()=>[{publisher:"mac-one",online:true,received_at:now,updated_at:now,config:{max_guests:1,...(hostBrowse?{browse:hostBrowse}:{})},
   slots:fleetSlots??broker.live().map((n,slot_id)=>({slot_id,state:"ready",relay_peer:n.relay_peer}))}];
@@ -390,4 +391,35 @@ test("a browse token works only on the stay's own Mac and stops when the stay en
  await f.sessions.receipt(await f.receipt(s.sessionId,60,true));
  assert.ok(s.grant.expires_at>f.broker.now());
  assert.throws(()=>f.sessions.browsePolicy(s.browse.token,mac),/no active stay on this Mac/);
+});
+
+test("a started stay whose guest stops registering closes at its last receipt and frees the wallet (#102)",async()=>{
+ const f=await fixture({starter:"2500000"}),session=await f.open();
+ await f.sessions.receipt(await f.receipt(session.sessionId,5));
+ f.advance(200);
+ f.broker.gone=()=>true;
+ const status=await f.sessions.status(await f.signed("agent-status",{sessionId:session.sessionId}));
+ assert.equal(status.active,false);assert.equal(status.closedReason,"guest-unreachable");assert.equal(status.usageUnresolved,false);
+ assert.equal(status.credit.reservedNanoUsd,"0");assert.equal(status.credit.spentNanoUsd,"900000");
+ await assert.rejects(f.sessions.receipt(await f.receipt(session.sessionId,9,true)),e=>e.code==="GUEST_USAGE");
+ f.broker.gone=()=>false;
+ assert.notEqual((await f.open()).sessionId,session.sessionId);
+});
+
+test("a broker restart or a blip shorter than grant_seconds keeps a started stay; only longer silence closes it (#102)",async()=>{
+ const f=await fixture(),session=await f.open();
+ await f.sessions.receipt(await f.receipt(session.sessionId,5));
+ const status=async()=>f.sessions.status(await f.signed("agent-status",{sessionId:session.sessionId}));
+ const restarted=new Broker({cfg:{},now:f.broker.now});
+ f.broker.gone=p=>restarted.gone(p);
+ assert.equal((await status()).active,true,"fresh process, guest not yet re-registered");
+ f.advance(250);
+ assert.equal((await status()).active,true,"silent 250 s after restart");
+ restarted.seen.set(f.node.relay_peer,f.broker.now());
+ f.advance(250);
+ await f.sessions.receipt(await f.receipt(session.sessionId,6));
+ assert.equal((await status()).active,true,"silent 250 s after its last registration");
+ f.advance(51);
+ const closed=await status();
+ assert.equal(closed.active,false);assert.equal(closed.closedReason,"guest-unreachable");
 });
