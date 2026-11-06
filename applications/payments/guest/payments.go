@@ -94,6 +94,15 @@ type Config struct {
 	DestinationPolicyHash string `json:"destinationPolicyHash"`
 	RunSeconds            int64  `json:"runSeconds"`
 }
+
+// ParseConfig is the guest's PAYMENTS_CONFIG decoder: unknown fields are an error.
+func ParseConfig(raw string) (Config, error) {
+	var cfg Config
+	d := json.NewDecoder(strings.NewReader(raw))
+	d.DisallowUnknownFields()
+	return cfg, d.Decode(&cfg)
+}
+
 type Registration struct {
 	Config
 	RunExpires       int64  `json:"runExpires"`

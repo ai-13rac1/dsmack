@@ -52,6 +52,7 @@ export class AgentSessions {
     // It still reserves its Mac slot (see available): the old VM may run until its hour ends.
     return this.active(s) && !s.endRequested && this.b.live().some(n => n.kind === "compute" && n.relay_peer === s.grant.relay_peer);
   }
+  /** @param {{publisher: string, slot_id: number}} [placement] */
   available(node, placement = undefined) {
     return !node.telemetry?.busy && !Object.values(this.b.payments?.state.agentSessions ?? {})
       .some(s => this.active(s) &&
