@@ -107,6 +107,8 @@ class SourceGateTests(unittest.TestCase):
                 packed=json.load(package.extractfile('applications/relay-broker/config.json'))
             self.assertEqual(packed['browser_origins'], ['https://private-agent-staging.dstack.soc1024.com'])
             self.assertEqual(packed['inference']['origins'], packed['browser_origins'])
+            manifest=json.loads((root/'prepared/relay-broker.manifest.json').read_text())
+            self.assertEqual(manifest['env']['DSTACK_SOCKET'], '/run/broker/relay-broker-staging/dstack.sock')
             paths=[]
             def api(path, **kwargs):
                 paths.append(path)
