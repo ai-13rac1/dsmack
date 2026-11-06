@@ -89,7 +89,9 @@ def prepare(args):
     manifest = {"name": project, "source": "tarball://" + project,
                 "ref": ref,
                 "runtime": "deno", "entry": "applications/relay-broker/server.ts", "isolation": "shared", "mode": "attested",
-                "env": {"OPERATOR_TOKEN_SHA256": args.operator_token_sha256}}
+                "env": {"OPERATOR_TOKEN_SHA256": args.operator_token_sha256,
+                        # Shared Deno mounts every project's socket; name this project's own.
+                        "DSTACK_SOCKET": f"/run/broker/{project}/dstack.sock"}}
     if args.encrypted_env:
         manifest["env"]["NEAR_ENCRYPTED_ENV"] = json.dumps(envelope(json.loads(args.encrypted_env.read_text())))
     args.out.mkdir(parents=True, exist_ok=True)
@@ -180,7 +182,9 @@ def deploy(args):
         raise ValueError("prepared project must be attested relay-broker shared Deno")
     if args.target == "production" and manifest["ref"] != ref:
         raise ValueError("prepared source ref differs from HEAD; prepare again")
-    if set(manifest.get("env", {})) - {"OPERATOR_TOKEN_SHA256", "NEAR_ENCRYPTED_ENV"}:
+    if manifest.get("env", {}).get("DSTACK_SOCKET") != f"/run/broker/{project_name_value}/dstack.sock":
+        raise ValueError("prepared manifest must name this project's dstack socket")
+    if set(manifest.get("env", {})) - {"OPERATOR_TOKEN_SHA256", "NEAR_ENCRYPTED_ENV", "DSTACK_SOCKET"}:
         raise ValueError("prepared environment contains unsupported fields")
     if "NEAR_ENCRYPTED_ENV" in manifest["env"]:
         envelope(json.loads(manifest["env"]["NEAR_ENCRYPTED_ENV"]))
