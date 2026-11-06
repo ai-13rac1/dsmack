@@ -153,6 +153,10 @@ test("admission reads only Helios-verified layover-chain answers for one pinned 
   await assert.rejects(admit(await guest(broker, key, operator.address)), /layover-chain \/call: HTTP 200/);
   tamper((j) => j.result ? { ...j, block_hash: "0x" + "b2".repeat(32) } : j);
   await assert.rejects(admit(await guest(broker, key, operator.address)), /answered for another block/);
+  tamper((j) => j.depth === undefined ? j : { ...j, depth: 0, block: 1000 });
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /ignored depth 30/);
+  tamper((j) => j.depth === undefined ? j : { ...j, block: 990 });
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /ignored depth 30/);
   tamper((j) => ({ ...j, head_age_s: 600 }));
   await assert.rejects(admit(await guest(broker, key, operator.address)), /Helios head is 600 s old/);
   tamper((j) => j.code ? { ...j, code: "0x6001" } : j);

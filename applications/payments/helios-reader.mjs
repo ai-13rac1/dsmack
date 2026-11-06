@@ -19,6 +19,8 @@ export class HeliosReader {
   async snapshot() {
     const head = await this.get("/head", { depth: this.depth });
     require(head.head_age_s <= this.maxHeadAge, `Helios head is ${head.head_age_s} s old`);
+    require(Number.isInteger(head.depth) && head.depth >= this.depth && Number.isInteger(head.block) && Number.isInteger(head.head) &&
+      head.block <= head.head - this.depth, `layover-chain /head ignored depth ${this.depth}: ${JSON.stringify(head)}`);
     const block = { hash: head.block_hash, number: head.block }, tag = { blockHash: block.hash };
     const pinned = async (path, params) => {
       const j = await this.get(path, { ...params, block: block.hash });
