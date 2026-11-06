@@ -33,9 +33,14 @@ export class HeliosReader {
       return (await pinned("/call", { to: arg.to, data: arg.data })).result;
     };
     // State at a pinned block hash never changes, so a snapshot fetches each read once. A failed read is not kept.
-    const reads = new Map();
+    // `used` holds what callers read; warm() fetches without marking, so a refresh replays only reads still in use.
+    const reads = new Map(), used = new Set();
     const read = (method, [arg]) => {
       const k = JSON.stringify([method, arg]);
+      used.add(k);
+      return warm(k, method, arg);
+    };
+    const warm = (k, method, arg) => {
       if (!reads.has(k)) {
         const p = fetchRead(method, arg);
         reads.set(k, p);
@@ -45,7 +50,7 @@ export class HeliosReader {
     };
     const code = await read("eth_getCode", [this.escrow]);
     require(code !== "0x" && keccak256(code).toLowerCase() === this.codeHash.toLowerCase(), "escrow deployed code mismatch");
-    return { block, tag, read, reads,
+    return { block, tag, read, used, warm: (k) => warm(k, ...JSON.parse(k)),
       call: async (name, args = []) =>
         abi.decodeFunctionResult(name, await read("eth_call", [{ to: this.escrow, data: abi.encodeFunctionData(name, args) }]))[0],
     };
@@ -63,7 +68,7 @@ export function sharedSnapshots(reader, seconds = 30, now = () => Date.now() / 1
     const at = now(), s = await reader.snapshot();
     if (current) {
       require(s.block.number >= current.s.block.number, "layover-chain pinned an older block than the served snapshot");
-      await Promise.allSettled([...current.s.reads.keys()].map((k) => { const [m, a] = JSON.parse(k); return s.read(m, [a]); }));
+      await Promise.allSettled([...current.s.used].map(s.warm));
     }
     return current = { s, at };
   })().finally(() => { next = undefined; });
