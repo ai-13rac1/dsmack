@@ -4,7 +4,7 @@ import { Continuity } from "./continuity.mjs";
 import { Workspaces } from "./workspaces.mjs";
 import { tunnelIndex } from "./tunnel-index.mjs";
 import { fleet, readFleet, readOwnership } from "./fleet.mjs";
-import { HeliosReader, heliosAdmission } from "../payments/helios-reader.mjs";
+import { HeliosReader, heliosAdmission, sharedSnapshots } from "../payments/helios-reader.mjs";
 import { networkMonitor } from "./network.mjs";
 import { rankNodes, busyRetrySeconds } from "./scheduler.mjs";
 import { json } from "../payments/schema.mjs";
@@ -45,7 +45,7 @@ async function load(ctx: Context) {
   if (!cfg.payments || !/^https:\/\//.test(cfg.chainRead)) {
     throw new Error("broker config needs payments and chainRead (the layover-chain URL)");
   }
-  const helios = new HeliosReader({ ...cfg.payments, chainRead: cfg.chainRead });
+  const helios = sharedSnapshots(new HeliosReader({ ...cfg.payments, chainRead: cfg.chainRead }));
   let payments;
   if (cfg.payments) {
     const path = ctx.dataDir + "/payments-" +
