@@ -22,6 +22,7 @@ export class Payments {
       now = () => Math.floor(Date.now() / 1000),
       quorum = undefined,
       ownership,
+      admission,
     },
   ) {
     this.cfg = cfg;
@@ -31,6 +32,8 @@ export class Payments {
     this.now = now;
     this.chain = quorum ?? new ChainReader(cfg);
     this.ownership = ownership;
+    // Guest admission reads (keys, CDRegistry, canary, class, broker signer) come only from Helios (HeliosReader).
+    this.admission = admission;
     this.pending = Promise.resolve();
     this.challenges = new Map();
   }
@@ -51,7 +54,7 @@ export class Payments {
   }
   async register(r, cfg) {
     this.brokerCfg = cfg;
-    const s = await this.chain.snapshot();
+    const s = await this.admission.snapshot();
     const checked = await verifyRelay(
       r,
       cfg,

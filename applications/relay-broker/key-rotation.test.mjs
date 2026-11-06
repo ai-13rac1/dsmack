@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { keccak256, runNode, Wallet } from "../payments/schema.mjs";
+import { abi, keccak256, runNode, Wallet } from "../payments/schema.mjs";
+import { HeliosReader } from "../payments/helios-reader.mjs";
 import { hex, sha256, unhex } from "../../dstack-compat/secret-release/policy.mjs";
 import { reportData } from "../../dstack-compat/binding.mjs";
 import { Payments } from "./payments.mjs";
@@ -13,16 +14,18 @@ import { applyOwnership, ownershipDomain, ownershipState, ownershipTypes } from 
 import { attest, deviceKey } from "./fixtures/synthetic-guest.mjs";
 
 const f = JSON.parse(readFileSync(new URL("fixtures/bind.json", import.meta.url)));
-const NOW = 1793120000, escrow = "0x835A61a88Cc8D750b5a971219aa8f9813B2067e6";
+const NOW = 1793120000, escrow = "0x835a61a88cc8d750b5a971219aa8f9813b2067e6";
 const word = (b) => hex(b).padStart(64, "0"), bytes32 = (n) => new Uint8Array(32).fill(n);
 const ATTEST = "0x" + "a1".repeat(20), REGISTRY = "0x" + "a2".repeat(20), CANARY = "0x" + "a3".repeat(20);
 const manifest = bytes32(0x99), image = bytes32(0x7c), cdhash = bytes32(0x0c), rp = bytes32(0x5e), build = bytes32(0xdf);
 const node = "0x" + "3a".repeat(32), code = "0x6000";
 
-// AppleAttestRegistry, CDRegistry and Canary as eth_call answers; registry.keys is what enroll() would have stored.
-function chainWith(registry, broker, operator) {
+// layover-chain over AppleAttestRegistry, CDRegistry, Canary and UsageEscrow; registry.keys is what enroll() would have
+// stored. tamper(reply) lets a test corrupt what the service answers.
+const CHAIN_READ = "https://chain.invalid/layover-chain", BLOCK = "0x" + "b1".repeat(32);
+function layoverChain(registry, broker, operator, tamper = (j) => j) {
   const keys = (kid) => registry.get(kid) ?? { x: new Uint8Array(32), y: new Uint8Array(32), expires: 0, enrolled: false };
-  const call = ({ to, data }) => {
+  const call = (to, data) => {
     const sel = data.slice(0, 10), arg = data.slice(10);
     if (to === ATTEST && sel === "0xdde5b7a1") { const k = keys(arg); return word(k.x) + word(k.y) + k.expires.toString(16).padStart(64, "0") + "0".repeat(64) + (k.enrolled ? "1" : "0").padStart(64, "0"); }
     if (to === ATTEST && sel === "0xb4eb10ce") return REGISTRY.slice(2).padStart(64, "0");
@@ -30,14 +33,19 @@ function chainWith(registry, broker, operator) {
     if (to === REGISTRY && sel === "0x65f4df9c") return arg === hex(cdhash) ? hex(rp) : "0".repeat(64);
     if (to === REGISTRY && sel === "0xb7b014b6") return hex(build);
     if (to === CANARY) return "0".repeat(64);
+    if (to === escrow && sel === abi.getFunction("brokerSigner").selector) return abi.encodeFunctionResult("brokerSigner", [broker.address]).slice(2);
+    if (to === escrow && sel === abi.getFunction("getNode").selector) return abi.encodeFunctionResult("getNode", [arg === node.slice(2)
+      ? [operator, 1, "0x" + hex(manifest), "0x" + hex(image)] : ["0x" + "00".repeat(20), 0, "0x" + "00".repeat(32), "0x" + "00".repeat(32)]]).slice(2);
     throw Error("unexpected eth_call " + to + " " + sel);
   };
-  const snapshot = { tag: "0xblock", block: { hash: "0xblock" },
-    read: async (method, [a]) => method === "eth_getCode" ? code : "0x" + call(a),
-    call: async (name, args) => name === "brokerSigner" ? broker.address
-      : name === "getNode" && args[0] === node ? { operator, unit: 1n, composeHash: "0x" + hex(manifest), imageHash: "0x" + hex(image) }
-      : { operator: "0x" + "00".repeat(20), unit: 0n, composeHash: "0x" + "00".repeat(32), imageHash: "0x" + "00".repeat(32) } };
-  return { snapshot: async () => snapshot };
+  return async (url) => {
+    const u = new URL(url), q = (k) => u.searchParams.get(k), pin = { block: 970, block_hash: BLOCK, head: 1000, head_age_s: 2, verified_by: "helios-opstack" };
+    assert.ok(u.href.startsWith(CHAIN_READ));
+    if (u.pathname.endsWith("/head")) return Response.json(tamper({ ...pin, depth: Number(q("depth")) }));
+    assert.equal(q("block"), BLOCK);
+    if (u.pathname.endsWith("/code")) return Response.json(tamper({ ...pin, code }));
+    return Response.json(tamper({ ...pin, result: "0x" + call(q("to"), q("data")) }));
+  };
 }
 
 // One registration from a fresh guest run whose attestation is signed by `key`. runKid is the key the guest bound its
@@ -77,9 +85,11 @@ async function setup() {
     admissionCode: [ATTEST, REGISTRY, CANARY].map((address) => ({ address, codeHash: keccak256(code) })) };
   const brokerCfg = { workloads: [{ manifest_sha256: hex(manifest), os_image_hash: hex(image), cdhash: hex(cdhash), service: "node" }] };
   const broker = new Payments({ cfg, key: brokerKey, now: () => NOW, save: async () => {},
-    quorum: chainWith(registry, brokerKey, operator.address.toLowerCase()), ownership: async () => state });
+    quorum: {}, admission: new HeliosReader({ escrow, codeHash: keccak256(code), chainRead: CHAIN_READ }), ownership: async () => state });
+  globalThis.fetch = layoverChain(registry, brokerKey, operator.address);
+  const tamper = (f) => { globalThis.fetch = layoverChain(registry, brokerKey, operator.address, f); };
   const admit = (r) => broker.register(r, brokerCfg);
-  return { broker, operator, domain, state, link, enroll, admit };
+  return { broker, operator, domain, state, link, enroll, admit, tamper };
 }
 
 test("a key rotation keeps the class: the new key is admitted once enrolled and linked, the old key no longer", async () => {
@@ -130,4 +140,19 @@ test("the run binds to the attesting key, and a link to another operator or by a
   const record = Object.values(state.links).find((r) => r.link.kid === "0x" + hex(other.kid));
   record.link = { ...record.link, operator: operator.address.toLowerCase() };
   await assert.rejects(admit(await guest(broker, other, operator.address)), /signature/);
+});
+
+test("admission reads only Helios-verified layover-chain answers for one pinned block, and fails closed", async () => {
+  const { broker, operator, link, enroll, admit, tamper } = await setup();
+  const key = await deviceKey();
+  enroll(key); await link(key, 1);
+  await admit(await guest(broker, key, operator.address));
+  tamper((j) => j.result ? { ...j, verified_by: undefined } : j);
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /layover-chain \/call: HTTP 200/);
+  tamper((j) => j.result ? { ...j, block_hash: "0x" + "b2".repeat(32) } : j);
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /answered for another block/);
+  tamper((j) => ({ ...j, head_age_s: 600 }));
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /Helios head is 600 s old/);
+  tamper((j) => j.code ? { ...j, code: "0x6001" } : j);
+  await assert.rejects(admit(await guest(broker, key, operator.address)), /code mismatch/);
 });
