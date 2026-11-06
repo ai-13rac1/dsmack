@@ -94,22 +94,31 @@ class BrowsePolicyTests(unittest.TestCase):
                     self.assertIn(b' 403 ',client.recv(4096))
             finally:server.shutdown();t.join()
 
-    def test_policy_lookup_validates_caches_and_expires(self):
+    def test_policy_lookup_is_per_mac_rechecked_and_a_dead_stays_token_stops(self):
         from http.server import BaseHTTPRequestHandler,HTTPServer
-        records={'d'*32:{'mode':'named','hosts':['shop.example'],'expires_at':2**40},'e'*32:{'mode':'named','hosts':['Bad_Host'],'expires_at':2**40},
+        records={'d'*32:{'mode':'open','hosts':[],'expires_at':2**40},'e'*32:{'mode':'named','hosts':['Bad_Host'],'expires_at':2**40},
                  'f'*32:{'mode':'open','hosts':[],'expires_at':1}}
         seen=[]
         class Broker(BaseHTTPRequestHandler):
             def do_GET(self):
-                seen.append(self.path);body=json.dumps(records[self.path.rsplit('/',1)[1]]).encode()
-                self.send_response(200);self.end_headers();self.wfile.write(body)
+                seen.append(self.path);token=self.path.split('/')[-1].split('?')[0]
+                if token not in records:self.send_response(404);self.end_headers();return
+                body=json.dumps(records[token]).encode();self.send_response(200);self.end_headers();self.wfile.write(body)
             def log_message(self,*a):pass
         with HTTPServer(('127.0.0.1',0),Broker) as broker:
             t=threading.Thread(target=broker.serve_forever);t.start()
             try:
-                server=proxy.Server.__new__(proxy.Server);server.browse_url=f'http://127.0.0.1:{broker.server_address[1]}/agent/browse/'
-                self.assertEqual(server.policy('d'*32)['hosts'],['shop.example']);server.policy('d'*32)
-                self.assertEqual(seen,['/agent/browse/'+'d'*32])
+                server=proxy.Server.__new__(proxy.Server);server.publisher='0x'+'a1'*20
+                server.browse_url=f'http://127.0.0.1:{broker.server_address[1]}/agent/browse/'
+                clock=[1000.0]
+                with patch.object(proxy.time,'monotonic',lambda:clock[0]):
+                    self.assertEqual(server.policy('d'*32)['mode'],'open');server.policy('d'*32)
+                    self.assertEqual(seen,['/agent/browse/'+'d'*32+'?publisher=0x'+'a1'*20])
+                    del records['d'*32]  # the stay ended: the broker no longer answers for its token
+                    clock[0]+=proxy.POLICY_TTL+1
+                    with self.assertRaises(OSError):server.policy('d'*32)
+                    with self.assertRaises(OSError):server.policy('d'*32)
+                    self.assertEqual(len(seen),3)
                 for token,message in (('e'*32,'malformed'),('f'*32,'expired'),('not-hex','unknown')):
                     with self.assertRaisesRegex(PermissionError,message):server.policy(token)
             finally:broker.shutdown();t.join()

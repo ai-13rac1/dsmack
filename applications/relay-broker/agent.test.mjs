@@ -365,18 +365,29 @@ test("browse terms: the stay names its sites within the host's signed policy, pr
  assert.deepEqual({...none.browse,token:undefined},{mode:"none",hosts:[],nanoUsdPerSecond:"0",token:undefined});
  assert.match(none.browse.token,/^[0-9a-f]{32}$/);
  assert.equal(none.rateNanoUsdPerSecond,"15000");
- assert.deepEqual(plain.sessions.browsePolicy(none.browse.token),{mode:"none",hosts:[],expires_at:none.grant.expires_at});
+ assert.deepEqual(plain.sessions.browsePolicy(none.browse.token,"mac-one"),{mode:"none",hosts:[],expires_at:none.grant.expires_at});
  const hostBrowse={default:"named",max:"open",price:{open_nano_usd_per_second:"5000",named_host_nano_usd_per_second:"100"}};
  const named=await (await fixture({hostBrowse})).open(undefined,{mode:"named",hosts:["shop.example","maps.example"]});
  assert.deepEqual([named.browse.mode,named.browse.hosts,named.rateNanoUsdPerSecond],["named",["shop.example","maps.example"],"15200"]);
  const wide=await fixture({hostBrowse}),open=await wide.open(undefined,{mode:"open",hosts:[]});
  assert.equal(open.rateNanoUsdPerSecond,"20000");
- assert.deepEqual(wide.sessions.browsePolicy(open.browse.token).mode,"open");
+ assert.deepEqual(wide.sessions.browsePolicy(open.browse.token,"mac-one").mode,"open");
  await wide.sessions.status(await wide.signed("agent-end",{sessionId:open.sessionId}),true);
- assert.throws(()=>wide.sessions.browsePolicy(open.browse.token),/no live stay/);
- assert.throws(()=>wide.sessions.browsePolicy("nothex"),/browse token required/);
+ assert.throws(()=>wide.sessions.browsePolicy(open.browse.token,"mac-one"),/no active stay on this Mac/);
+ assert.throws(()=>wide.sessions.browsePolicy("nothex","mac-one"),/browse token and publisher required/);
  const capped=await fixture({hostBrowse:{default:"none",max:"named"}});
  await assert.rejects(capped.open(undefined,{mode:"open",hosts:[]}),/browse up to named/);
  await assert.rejects(capped.open(undefined,{mode:"named",hosts:["Not A Host"]}),/browse must be/);
  await assert.rejects(capped.open(undefined,{mode:"none",hosts:["shop.example"]}),/hosts only for named/);
+});
+
+test("a browse token works only on the stay's own Mac and stops when the stay ends, even with grant time left",async()=>{
+ const f=await fixture({hostBrowse:{default:"none",max:"open"}}),s=await f.open(undefined,{mode:"open",hosts:[]});
+ const mac=s.placement.publisher;
+ assert.equal(f.sessions.browsePolicy(s.browse.token,mac).mode,"open");
+ assert.throws(()=>f.sessions.browsePolicy(s.browse.token,"0x"+"b2".repeat(20)),/no active stay on this Mac/);
+ f.advance(60);
+ await f.sessions.receipt(await f.receipt(s.sessionId,60,true));
+ assert.ok(s.grant.expires_at>f.broker.now());
+ assert.throws(()=>f.sessions.browsePolicy(s.browse.token,mac),/no active stay on this Mac/);
 });

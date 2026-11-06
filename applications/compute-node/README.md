@@ -41,7 +41,10 @@ The guest firewall permits the operator CONNECT proxy. The proxy admits the
 broker, the relay tunnel and the package hosts in `package-hosts.json` for every
 guest. Anything else follows the stay's browse policy: the guest's tool server
 forwards each CONNECT through a loopback forwarder that adds the stay's browse
-token, and the proxy looks the token up at `BROKER/agent/browse/TOKEN`. The
+token, and the proxy looks the token up at `BROKER/agent/browse/TOKEN?publisher=MAC`.
+The broker answers only for an active stay placed on that Mac, and the proxy
+rechecks every 10 s, so a token stops working on other hosts and soon after its
+stay ends. The
 policy is `none`, `named` (exactly the listed hosts) or `open` (any host whose
 every IPv4 address is public, so never loopback, the LAN, link-local or CGNAT).
 The manifest's `AGENT_NETWORK_ALLOWLIST` describes this rule, not a stay's list,

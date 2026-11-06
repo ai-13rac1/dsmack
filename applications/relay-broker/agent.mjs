@@ -131,11 +131,13 @@ export class AgentSessions {
       return this.view(s);
     });
   }
-  // The Mac's CONNECT proxy asks which policy a stay's browse token carries; the token is the only credential.
-  browsePolicy(token) {
-    need(id(token), "BAD_REQUEST", "browse token required");
+  // The Mac's CONNECT proxy asks which policy a stay's browse token carries. It answers only for a stay placed on that
+  // Mac and only while the stay is active, so a token works neither on another host nor after its stay ends.
+  browsePolicy(token, publisher) {
+    need(id(token) && typeof publisher === "string", "BAD_REQUEST", "browse token and publisher required");
     const s = Object.values(this.b.payments.state.agentSessions ?? {}).find(v => v.browse?.token === token);
-    need(s && !s.final && s.grant.expires_at > this.b.now(), "BROWSE_UNKNOWN", "no live stay holds this browse token", 404);
+    need(s && s.placement?.publisher.toLowerCase() === publisher.toLowerCase() && this.active(s) && !s.endRequested,
+      "BROWSE_UNKNOWN", "no active stay on this Mac holds this browse token", 404);
     return { mode: s.browse.mode, hosts: s.browse.hosts, expires_at: s.grant.expires_at };
   }
   async status(r, end = false) {

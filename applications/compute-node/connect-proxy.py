@@ -19,6 +19,7 @@ import urllib.request
 
 HOST_RE = r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}'
 PACKAGE_HOSTS = Path(__file__).with_name('package-hosts.json')
+POLICY_TTL = 10
 
 def public_address(host):
     """Resolve once and dial the checked address, so DNS cannot rebind to the LAN or the Mac."""
@@ -91,24 +92,27 @@ class Server(socketserver.ThreadingTCPServer):
     resolved_hosts = {}
     connection_seconds = 240
     browse_url = None
+    publisher = None
     allow_reuse_address = True
     daemon_threads = True
 
     def policy(self, token):
-        """The broker's record for a stay's browse token, cached until it expires."""
+        """The broker's record for a stay's browse token on this Mac, rechecked after POLICY_TTL seconds, so a token
+        stops working within that long after its stay ends."""
         if not re.fullmatch(r'[0-9a-f]{32}', token) or not self.browse_url:
             raise PermissionError('unknown browse token')
         cache = self.__dict__.setdefault('policies', {})
-        if token not in cache:
-            with urllib.request.urlopen(self.browse_url + token, timeout=10) as response:
+        if token not in cache or time.monotonic() - cache[token][0] > POLICY_TTL:
+            cache.pop(token, None)
+            with urllib.request.urlopen(f'{self.browse_url}{token}?publisher={self.publisher}', timeout=10) as response:
                 p = json.loads(response.read(65536))
             if (p['mode'] not in ('none', 'named', 'open') or type(p['expires_at']) is not int
                     or not all(re.fullmatch(HOST_RE, h) for h in p['hosts'])):
                 raise PermissionError('malformed browse policy')
-            cache[token] = p
-        if cache[token]['expires_at'] <= time.time():
+            cache[token] = (time.monotonic(), p)
+        if cache[token][1]['expires_at'] <= time.time():
             raise PermissionError('browse policy expired')
-        return cache[token]
+        return cache[token][1]
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
@@ -117,10 +121,13 @@ if __name__ == '__main__':
     p.add_argument('--allow-host', action='append', required=True, help='exact CONNECT hostname; repeat for broker and quick tunnel')
     p.add_argument('--resolve',action='append',default=[],help='per-process HOST=public IPv4 DNS binding')
     p.add_argument('--connection-seconds', type=int, default=240)
-    p.add_argument('--browse-url', help='broker prefix mapping a stay browse token to its policy, e.g. https://pod/sandbox/browse/')
+    p.add_argument('--browse-url', help='broker prefix mapping a stay browse token to its policy, e.g. https://pod/relay-broker/agent/browse/')
+    p.add_argument('--publisher', help="this Mac's publisher address; the broker answers only for stays placed here")
     a = p.parse_args()
     if not 1 <= a.connection_seconds <= 3600:
         p.error('connection lifetime must be 1..3600 seconds')
+    if bool(a.browse_url) != bool(a.publisher) or (a.publisher and not re.fullmatch(r'0x[0-9a-fA-F]{40}', a.publisher)):
+        p.error('--browse-url and --publisher (an 0x address) go together')
     if any(not re.fullmatch(HOST_RE, host) for host in a.allow_host):
         p.error('exact lowercase DNS hostnames required')
     bindings={}
@@ -134,5 +141,6 @@ if __name__ == '__main__':
         server.allowed_hosts = frozenset(a.allow_host)
         server.package_hosts = frozenset(json.loads(PACKAGE_HOSTS.read_text()))
         server.browse_url = a.browse_url
+        server.publisher = a.publisher.lower() if a.publisher else None
         server.connection_seconds = a.connection_seconds
         server.serve_forever()
