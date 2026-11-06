@@ -8,7 +8,7 @@ dsmack_gc.py reap ROOT            retire the disks of stopped generations' runs 
 dsmack_gc.py store PATH...        put big files into the content-addressed store and leave APFS clones in their place
 dsmack_gc.py source COMMIT DEST   check COMMIT out at DEST as a worktree of the one shared bare repository
 """
-import argparse,gzip,hashlib,json,os,plistlib,re,shutil,subprocess,sys,time
+import argparse,contextlib,fcntl,gzip,hashlib,json,os,plistlib,re,shutil,subprocess,sys,time
 from pathlib import Path
 
 HOME=Path.home();DSMACK=HOME/'.dsmack'
@@ -18,7 +18,7 @@ RELEASES='dsmack-*'
 DISKS=('scratch.img','workload.img','inputs.img','*.staged','.*.partial')
 REGENERABLE={'.git','source','node_modules','venv','.venv','__pycache__','.build','swift-build','DerivedData','oci','blobs','build','checkouts'}
 IMAGE_SUFFIXES={'.img','.ext4','.raw','.verity','.staged','.partial','.pack','.a','.o','.dylib','.tar','.tgz','.zst','.squashfs'}
-SMALL=50<<20;BIG=16<<20
+SMALL=50<<20;BIG=16<<20;YOUNG=600
 
 
 def clone(src,dst):
@@ -37,6 +37,17 @@ def alive(pid):
     except ProcessLookupError:return False
     except PermissionError:pass
     return True
+
+
+@contextlib.contextmanager
+def locked():
+    """One gc or reap at a time across the pools and launchers sharing this volume; a busy lock skips."""
+    DSMACK.mkdir(parents=True,exist_ok=True)
+    with (DSMACK/'gc.lock').open('a') as lock:
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(dict(event='gc_busy'));yield False;return
+        yield True
 
 
 def processes():
@@ -119,14 +130,15 @@ def remove(release,dry_run):
     log(dict(event='removed',release=str(release),bytes=size,kept_files=kept,kept_in=str(KEEP/release.name)))
 
 
-def reap(root,ps,dry_run=False):
-    """Gzip result.img (hash-checked) and delete the other disks of runs no live launcher or process owns."""
+def reap(root,dry_run=False):
+    """Gzip result.img (hash-checked) and delete the other disks of runs no live launcher or process owns.
+    ps is read again for each run, and runs touched in the last YOUNG seconds wait: an orphaned pool.py can still launch."""
     freed=0
     for generation in sorted(root.glob('pool-*')):
         pid=generation/'launcher.pid'
         if pid.is_file() and pid.read_text().strip().isdigit() and alive(int(pid.read_text())):continue
         for run in sorted(generation.glob('**/run-*')):
-            if not run.is_dir() or run.name in ps:continue
+            if not run.is_dir() or time.time()-run.stat().st_mtime<YOUNG or run.name in processes():continue
             for disk in [f for pattern in DISKS for f in run.rglob(pattern)]+list(run.rglob('result.img')):
                 attempt=re.search(r'dsmack-attempt\.(\d+)\.',disk.name)
                 if not disk.is_file() or disk.is_symlink() or (attempt and alive(int(attempt[1]))):continue
@@ -176,22 +188,28 @@ def source(commit,dest,bare=BARE,url=URL):
 
 
 def gc(dry_run=False,home=HOME):
+    with locked() as ok:
+        if ok:collect(dry_run,home)
+
+
+def collect(dry_run,home):
     ps,agents=processes(),home/'Library/LaunchAgents'
     jobs=list(pool_jobs(agents))
     if not jobs:raise RuntimeError('no launchd pool found; refusing to treat every release as unused')
-    pins=PINS.read_text().splitlines() if PINS.is_file() else []
+    if not PINS.is_file():raise RuntimeError(f'{PINS} missing; list the releases that must survive (one path per line) before gc')
+    pins=PINS.read_text().splitlines()
     dirs=sorted(p for p in home.glob(RELEASES) if p.is_dir() and not p.is_symlink())
     texts=[t for _,job in jobs for t in job]+[p.read_bytes().decode('latin1') for p in agents.glob('*.plist')]
     live=live_releases(dirs,texts+[ps,'\n'.join(pins)])
     # Only a staged release (a source checkout or a pool command) is ever removed; other dsmack-* dirs are left alone.
     rest=sorted((r for r in dirs if r not in live and ((r/'source').is_dir() or (r/'pool-command.json').is_file())),
                 key=lambda r:r.stat().st_mtime)
-    rollback=rest[-1:]
+    rollback=rest[-1:]  # most recently modified, not most recently staged; pin what must survive
     log(dict(event='gc_plan',live=sorted(map(str,live)),rollback=list(map(str,rollback)),remove=len(rest)-len(rollback),dry_run=dry_run))
     for release in rest[:-1]:remove(release,dry_run)
     if BARE.exists() and not dry_run:subprocess.run(['git','--git-dir',str(BARE),'worktree','prune'],check=True)
     store_gc(sorted(live)+rollback,dry_run)
-    for root,_ in jobs:reap(root,ps,dry_run)
+    for root,_ in jobs:reap(root,dry_run)
 
 
 def main():
@@ -203,7 +221,9 @@ def main():
     s=sub.add_parser('source');s.add_argument('commit');s.add_argument('dest',type=Path)
     a=parser.parse_args()
     if a.action=='gc':gc(a.dry_run)
-    elif a.action=='reap':reap(a.root.resolve(),processes(),a.dry_run)
+    elif a.action=='reap':
+        with locked() as ok:
+            if ok:reap(a.root.resolve(),a.dry_run)
     elif a.action=='store':store([p.resolve() for p in a.paths])
     else:source(a.commit,a.dest.resolve())
 

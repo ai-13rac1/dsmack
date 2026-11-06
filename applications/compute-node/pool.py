@@ -40,15 +40,24 @@ class DiskLow(MacOccupied):
 
 
 DISK_FLOOR = 12 << 30
+GC_LOG = Path.home()/'.dsmack/gc.log'
 gc_started = None
 
 
 def collect_garbage():
+    """Start one dsmack_gc.py gc; report a running or failed one instead of starting another."""
     global gc_started
-    if gc_started and gc_started.poll() is None:
-        return
-    gc_started = subprocess.Popen([sys.executable, str(HERE/'dsmack_gc.py'), 'gc'], stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if gc_started:
+        code = gc_started.poll()
+        if code is None:
+            return f'gc running, log {GC_LOG}'
+        if code:
+            return f'gc exited {code}; not retried, see {GC_LOG}'
+    GC_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with GC_LOG.open('a') as log:
+        gc_started = subprocess.Popen([sys.executable, str(HERE/'dsmack_gc.py'), 'gc'], stdin=subprocess.DEVNULL,
+                                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return f'gc started, log {GC_LOG}'
 
 
 def hardware():
@@ -149,8 +158,7 @@ def should_replace(active, now, replace_after):
 def preflight(state, active, pool_root=None, coexist_pools=()):
     free = shutil.disk_usage(state).free
     if free < DISK_FLOOR:
-        collect_garbage()
-        raise DiskLow(f'{free} bytes free on Mac, below the {DISK_FLOOR} byte floor; collecting garbage')
+        raise DiskLow(f'{free} bytes free on Mac, below the {DISK_FLOOR} byte floor; {collect_garbage()}')
     result = subprocess.run(['pgrep', '-fl', 'MacOS/dsmack-runner'], capture_output=True, text=True)
     if result.returncode not in (0, 1):
         raise RuntimeError('Mac runner process probe failed')

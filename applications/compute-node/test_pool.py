@@ -134,14 +134,24 @@ class PoolTests(unittest.TestCase):
 
     def test_below_disk_floor_offers_no_slot_starts_one_gc_and_reports_free_disk(self):
         low = SimpleNamespace(free=pool.DISK_FLOOR - 1)
-        gc = Mock(poll=Mock(return_value=None))
-        with patch.object(pool.shutil, 'disk_usage', return_value=low), \
-                patch.object(pool.subprocess, 'Popen', return_value=gc) as popen, patch.object(pool, 'gc_started', None):
+        running, failed = Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=2))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(pool.shutil, 'disk_usage', return_value=low), \
+                patch.object(pool, 'GC_LOG', Path(tmp)/'gc.log'), patch.object(pool, 'gc_started', None), \
+                patch.object(pool.subprocess, 'Popen', side_effect=[running, failed]) as popen:
+            with self.assertRaisesRegex(pool.DiskLow, 'floor; gc started, log'):
+                pool.preflight(Path('/state'), [])
+            with self.assertRaisesRegex(pool.DiskLow, 'gc running'):
+                pool.preflight(Path('/state'), [])
+            running.poll.return_value = 0
+            with self.assertRaisesRegex(pool.DiskLow, 'gc started'):
+                pool.preflight(Path('/state'), [])
             for _ in range(2):
-                with self.assertRaisesRegex(pool.DiskLow, 'floor'):
+                with self.assertRaisesRegex(pool.DiskLow, 'gc exited 2; not retried, see .*gc.log'):
                     pool.preflight(Path('/state'), [])
-            popen.assert_called_once()
+            self.assertEqual(popen.call_count, 2)
             self.assertEqual(popen.call_args.args[0][1:], [str(pool.HERE/'dsmack_gc.py'), 'gc'])
+            self.assertEqual(popen.call_args.kwargs['stderr'], pool.subprocess.STDOUT)
+            self.assertEqual(popen.call_args.kwargs['stdout'].name, str(Path(tmp)/'gc.log'))
         self.assertTrue(issubclass(pool.DiskLow, pool.MacOccupied))
         with tempfile.TemporaryDirectory() as tmp:
             instance = self.instance(Path(tmp))

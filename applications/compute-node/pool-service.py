@@ -33,7 +33,9 @@ def main():
         return
     if args.action == 'run':
         import dsmack_gc
-        dsmack_gc.reap(root, dsmack_gc.processes())
+        with dsmack_gc.locked() as ok:
+            if ok:
+                dsmack_gc.reap(root)
         state = root / ('pool-'+str(time.time_ns()))
         if not any(arg.split('=', 1)[0] == '--restart-config' for arg in command):
             command += ['--restart-config', str(root/'restart.json')]

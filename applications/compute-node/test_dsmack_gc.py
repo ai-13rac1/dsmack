@@ -22,9 +22,11 @@ class GcTests(unittest.TestCase):
         patches = [patch.object(dsmack_gc, name, self.dsmack/leaf) for name, leaf in
                    (('STORE', 'store'), ('BARE', 'dsmack.git'), ('PINS', 'gc-pins'), ('KEEP', 'gc-keep'))]
         patches.append(patch.object(dsmack_gc, 'clone', lambda src, dst: shutil.copyfile(src, dst)))
+        patches.append(patch.object(dsmack_gc, 'DSMACK', self.dsmack))
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
+        self.dsmack.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -68,7 +70,6 @@ class GcTests(unittest.TestCase):
         self.pool('org.dsmack.pool.live', root, ['/py', str(live/'source/mac-pool.py'), '--runner', str(live/'runner'),
                                                  '--other-runner', str(stage/'runner')])
         (root/'restart.json').write_text(json.dumps({'source': str(staged/'source')}))
-        self.dsmack.mkdir(exist_ok=True)
         (self.dsmack/'gc-pins').write_text(str(pinned)+'\n')
         with patch.object(dsmack_gc, 'processes', return_value='/usr/bin/true'):
             dsmack_gc.gc(home=self.home)
@@ -90,6 +91,10 @@ class GcTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'no launchd pool'):
             dsmack_gc.gc(home=self.home)
         self.pool('org.dsmack.pool.live', self.home/'dl', ['/py'])
+        with patch.object(dsmack_gc, 'processes', return_value=''), self.assertRaisesRegex(RuntimeError, 'gc-pins missing'):
+            dsmack_gc.gc(home=self.home)
+        self.assertEqual(len(list(self.home.glob('dsmack-*'))), 4)
+        (self.dsmack/'gc-pins').write_text('')
         # Hand-written plists put tags back to back: <array><string>/Users/...
         (self.home/'Library/LaunchAgents/dev.dsmack.provider.plist').write_bytes(re.sub(rb'>\s+<', b'><', plistlib.dumps(
             {'Label': 'dev.dsmack.provider', 'ProgramArguments': [str(provider/'ProviderDemo.app/Contents/MacOS/provider-host')]})))
@@ -97,13 +102,19 @@ class GcTests(unittest.TestCase):
             dsmack_gc.gc(home=self.home)
         self.assertEqual(sorted(p.name for p in self.home.glob('dsmack-*')), ['dsmack-b', 'dsmack-resip', 'dsmack-signing'])
 
-    def test_dry_run_deletes_nothing(self):
+    def test_dry_run_deletes_nothing_and_a_held_lock_skips_gc(self):
         self.pool('org.dsmack.pool.live', self.home/'dl', ['/py'])
+        (self.dsmack/'gc-pins').write_text('')
         for i in range(3):
             self.release(f'dsmack-{i}', i)
         with patch.object(dsmack_gc, 'processes', return_value=''):
             dsmack_gc.gc(dry_run=True, home=self.home)
-        self.assertEqual(len(list(self.home.glob('dsmack-*'))), 3)
+            self.assertEqual(len(list(self.home.glob('dsmack-*'))), 3)
+            with dsmack_gc.locked() as ok:
+                self.assertTrue(ok)
+                dsmack_gc.gc(home=self.home)
+            self.assertEqual(len(list(self.home.glob('dsmack-*'))), 3)
+            self.assertIn('gc_busy', (self.dsmack/'gc-keep/gc.jsonl').read_text())
 
     def run_dir(self, root, generation, run, launcher_pid=None):
         path = root/generation/'guests-1'/run
@@ -114,6 +125,7 @@ class GcTests(unittest.TestCase):
         (path/'session.json').write_text('{}')
         if launcher_pid:
             (root/generation/'launcher.pid').write_text(str(launcher_pid))
+        os.utime(path, (1, 1))
         return path
 
     def test_reap_retires_stopped_runs_and_spares_live_launchers_and_processes(self):
@@ -121,13 +133,18 @@ class GcTests(unittest.TestCase):
         stopped = self.run_dir(root, 'pool-1', 'run-1', launcher_pid=999999)
         running = self.run_dir(root, 'pool-2', 'run-2', launcher_pid=os.getpid())
         draining = self.run_dir(root, 'pool-3', 'run-3')
-        with patch.object(dsmack_gc, 'alive', side_effect=lambda pid: pid == os.getpid()):
-            dsmack_gc.reap(root, 'dsmack-runner hvf-v3 '+str(draining/'out'))
+        young = self.run_dir(root, 'pool-4', 'run-4')
+        os.utime(young)
+        # The draining run starts after the first ps read; reap must see it in a later one.
+        snapshots = iter(['']+['dsmack-runner hvf-v3 '+str(draining/'out')]*10)
+        with patch.object(dsmack_gc, 'alive', side_effect=lambda pid: pid == os.getpid()), \
+                patch.object(dsmack_gc, 'processes', side_effect=lambda: next(snapshots)):
+            dsmack_gc.reap(root)
         self.assertEqual(sorted(p.name for p in stopped.rglob('*') if p.is_file()),
                          ['result.img.gz', 'session.json'])
         with gzip.open(stopped/'evidence/result.img.gz') as stream:
             self.assertEqual(stream.read(), b'result'*1000)
-        for path in (running, draining):
+        for path in (running, draining, young):
             self.assertTrue((path/'out/scratch.img').exists() and (path/'out/result.img').exists())
 
     def test_reap_keeps_a_partial_copy_whose_writer_lives(self):
@@ -135,8 +152,9 @@ class GcTests(unittest.TestCase):
         run = self.run_dir(root, 'pool-1', 'run-1')
         partial = run/'out/.scratch.img.dsmack-attempt.4242.1.2.partial'
         partial.write_bytes(b'x')
-        with patch.object(dsmack_gc, 'alive', side_effect=lambda pid: pid == 4242):
-            dsmack_gc.reap(root, '')
+        with patch.object(dsmack_gc, 'alive', side_effect=lambda pid: pid == 4242), \
+                patch.object(dsmack_gc, 'processes', return_value=''):
+            dsmack_gc.reap(root)
         self.assertTrue(partial.exists())
         self.assertFalse((run/'out/scratch.img').exists())
 
@@ -165,7 +183,6 @@ class GcTests(unittest.TestCase):
         git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'v1')
         commit = git('rev-parse', 'HEAD').strip()
         bare = self.dsmack/'dsmack.git'
-        self.dsmack.mkdir()
         for name in ('dsmack-r1', 'dsmack-r2'):
             dsmack_gc.source(commit, self.home/name/'source', bare=bare, url=str(origin))
             self.assertEqual((self.home/name/'source/pool.py').read_text(), 'v1')
