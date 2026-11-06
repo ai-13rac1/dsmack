@@ -133,7 +133,8 @@ def reap(root,ps,dry_run=False):
                 freed+=disk.stat().st_blocks*512
                 if dry_run:continue
                 if disk.name=='result.img':
-                    packed=disk.with_name('result.img.gz')
+                    packed=run/'evidence/result.img.gz'  # where pool.py's preserve_and_retire keeps it
+                    packed.parent.mkdir(exist_ok=True)
                     with disk.open('rb') as src,gzip.open(packed,'wb') as dest:shutil.copyfileobj(src,dest,1<<20)
                     if sha(packed,gzip.open)!=sha(disk):raise RuntimeError('gzipped result differs: '+str(disk))
                 disk.unlink()

@@ -125,7 +125,7 @@ class GcTests(unittest.TestCase):
             dsmack_gc.reap(root, 'dsmack-runner hvf-v3 '+str(draining/'out'))
         self.assertEqual(sorted(p.name for p in stopped.rglob('*') if p.is_file()),
                          ['result.img.gz', 'session.json'])
-        with gzip.open(stopped/'out/result.img.gz') as stream:
+        with gzip.open(stopped/'evidence/result.img.gz') as stream:
             self.assertEqual(stream.read(), b'result'*1000)
         for path in (running, draining):
             self.assertTrue((path/'out/scratch.img').exists() and (path/'out/result.img').exists())
