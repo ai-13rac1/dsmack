@@ -11,7 +11,7 @@ export function browseForwarder(upstream, token, port = 18480) {
       head = Buffer.concat([head, chunk]);
       const end = head.indexOf("\r\n\r\n");
       if (end < 0) { if (head.length > 8192) client.destroy(); return; }
-      client.off("data", onData);
+      client.pause(); client.off("data", onData);
       const lines = head.subarray(0, end).toString("latin1").split("\r\n").filter((line) => !/^proxy-authorization:/i.test(line));
       if (token()) lines.push("Proxy-Authorization: Basic " + Buffer.from("browse:" + token()).toString("base64"));
       const proxy = connect(Number(upstreamPort), hostname, () => {

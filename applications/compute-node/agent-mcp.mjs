@@ -119,8 +119,9 @@ export function createAgentServer(root, options = {}) {
     const { name, arguments: args = {}, _meta } = request.params;
     const token = _meta?.["dsmack/browse"];
     if (typeof token === "string" && /^[0-9a-f]{32}$/.test(token) && token !== browse.token) {
+      const previous = browse.token;
       browse.token = token;
-      browse.policy = await browsePolicy();
+      try { browse.policy = await browsePolicy(options.browsePort); } catch (error) { browse.token = previous; throw error; }
     }
     if (name === "dsmack_monitor") {
       await monitor.preflight(args.prompt);

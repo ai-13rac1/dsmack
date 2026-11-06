@@ -48,7 +48,12 @@ class Handler(socketserver.StreamRequestHandler):
                 token = secret if user == 'browse' else None
         server = self.server
         if report:
-            body = json.dumps(server.policy(token) if token else {'mode': 'none', 'hosts': []}).encode()
+            try:
+                body = json.dumps(server.policy(token) if token else {'mode': 'none', 'hosts': []}).encode()
+            except (PermissionError, OSError) as error:
+                print(json.dumps({'report': True, 'refused': str(error)}), flush=True)
+                self.wfile.write(b'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n')
+                return
             self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n' % len(body) + body)
             return
         address = server.resolved_hosts.get(host, host)

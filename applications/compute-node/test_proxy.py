@@ -86,6 +86,12 @@ class BrowsePolicyTests(unittest.TestCase):
                     auth=base64.b64encode(('browse:'+'b'*32).encode()).decode()
                     client.sendall(f'GET /browse HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n'.encode())
                     self.assertEqual(json.loads(client.recv(4096).split(b'\r\n\r\n',1)[1]),self.POLICIES['b'*32])
+                with socket.socket() as client:
+                    client.settimeout(2);client.connect(server.server_address)
+                    auth=base64.b64encode(('browse:'+'c'*32).encode()).decode()
+                    server.policy=lambda token:(_ for _ in ()).throw(PermissionError('unknown browse token'))
+                    client.sendall(f'GET /browse HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n'.encode())
+                    self.assertIn(b' 403 ',client.recv(4096))
             finally:server.shutdown();t.join()
 
     def test_policy_lookup_validates_caches_and_expires(self):
