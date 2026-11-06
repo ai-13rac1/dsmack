@@ -3,7 +3,7 @@ import { ArtifactShares, artifactStoreRemote } from "./artifact-shares.mjs";
 import { Continuity } from "./continuity.mjs";
 import { Workspaces } from "./workspaces.mjs";
 import { tunnelIndex } from "./tunnel-index.mjs";
-import { fleet, readFleet } from "./fleet.mjs";
+import { fleet, readFleet, readOwnership } from "./fleet.mjs";
 import { networkMonitor } from "./network.mjs";
 import { rankNodes, busyRetrySeconds } from "./scheduler.mjs";
 import { json } from "../payments/schema.mjs";
@@ -13,7 +13,6 @@ import { NearError, NearProvider } from "./near.mjs";
 import { rpcChain } from "../../dstack-compat/secret-release/policy.mjs";
 import { RpcClient } from "../payments/rpc.mjs";
 import { RPCS } from "../payments/schema.mjs";
-import { withEnrollment } from "./attestation.mjs";
 import { Broker, limits, Refused } from "./broker.mjs";
 import { canonical } from "./grants.mjs";
 import { getProviderEnvKey, getSigningKey } from "./key.ts";
@@ -40,6 +39,10 @@ async function load(ctx: Context) {
     using directory = await Deno.open(ctx.dataDir, { read: true });
     await directory.sync();
   };
+  // App Attest keys come only from AppleAttestRegistry, so a rotated key needs no broker change.
+  if (cfg.enrollments || cfg.payments?.enrollments) {
+    throw new Error("broker config must not pin enrollments; enroll the key on AppleAttestRegistry");
+  }
   let payments;
   if (cfg.payments) {
     const path = ctx.dataDir + "/payments-" +
@@ -55,6 +58,7 @@ async function load(ctx: Context) {
       key: await getSigningKey(ctx.env.DSTACK_SOCKET, true),
       state,
       save: (v: object) => atomicSave(path, v),
+      ownership: () => readOwnership(ctx.dataDir + "/fleet.json"),
     });
   }
   let inference, providerEnvironment;
@@ -87,10 +91,7 @@ async function load(ctx: Context) {
     if (!(e instanceof Deno.errors.NotFound)) throw e;
   }
   const chainRpc = new RpcClient({ rpcs: cfg.rpcs ?? [cfg.rpc, ...RPCS] });
-  const chain = withEnrollment(
-    rpcChain(cfg.rpc, cfg.attest, cfg.canary, (method: string, params: unknown[]) => chainRpc.request(method, params)),
-    cfg.enrollments,
-  );
+  const chain = rpcChain(cfg.rpc, cfg.attest, cfg.canary, (method: string, params: unknown[]) => chainRpc.request(method, params));
   const broker = new Broker({
     cfg,
     chain,

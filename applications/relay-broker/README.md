@@ -28,9 +28,11 @@ continuity. It defaults to `rpc` followed by the public Base Sepolia providers.
 Start with `config.example.json`; set the RPC, App Attest registries and approved
 workload tuples (`manifest_sha256`, `os_image_hash`, `cdhash`, `service`). Compute
 the manifest SHA-256 from the exact compose bytes and obtain the image hash from
-its `base_vm.os_image_hash`. For off-chain enrollment, `enroll.py ENROLLMENT
-CDHASH` verifies the Apple chain and emits a public enrollment entry for the
-config's `enrollments` array.
+its `base_vm.os_image_hash`. App Attest keys are read only from
+AppleAttestRegistry (`keys(kid)`); the broker refuses a config with
+`enrollments`, so a rotated key needs an on-chain `enroll` and a MacLink, never a
+broker change. A paid guest is admitted only if the key that signed its
+attestation has a verified MacLink (`/fleet/link`) to its class operator.
 
 Configure the prepaid USDC `payments` block as in `../payments/README.md`. Add the
 `inference` block from `config.inference.example.json`, including allowed
