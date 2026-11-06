@@ -32,6 +32,10 @@ def main():
         subprocess.run(['launchctl', 'kill', 'SIGHUP', domain+'/'+label], check=True)
         return
     if args.action == 'run':
+        import dsmack_gc
+        with dsmack_gc.locked() as ok:
+            if ok:
+                dsmack_gc.reap(root)
         state = root / ('pool-'+str(time.time_ns()))
         if not any(arg.split('=', 1)[0] == '--restart-config' for arg in command):
             command += ['--restart-config', str(root/'restart.json')]

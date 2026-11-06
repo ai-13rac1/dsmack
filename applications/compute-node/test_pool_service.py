@@ -31,6 +31,16 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(second[second.index('--restart-config')+1], str(root/'restart.json'))
             self.assertNotEqual(first[first.index('--state')+1], second[second.index('--state')+1])
 
+    def test_launchd_start_reaps_stopped_generations_before_exec(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(service.os, 'execv', side_effect=SystemExit) as execute, \
+                patch('dsmack_gc.reap') as reap, patch('dsmack_gc.DSMACK', Path(tmp)/'.dsmack'):
+            root = Path(tmp)
+            (root/'command.json').write_text(json.dumps(['/python', '/source/mac-pool.py']))
+            with self.assertRaises(SystemExit):
+                self.invoke('run', root)
+            reap.assert_called_once_with(root.resolve())
+            execute.assert_called_once()
+
     def test_explicit_restart_config_is_used_by_launcher(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(service.os, 'execv', side_effect=SystemExit) as execute:
             root = Path(tmp)

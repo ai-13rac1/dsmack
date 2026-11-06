@@ -22,6 +22,10 @@ import (
 const agentProtocol = "/dsmack/agent-mcp/1.0.0"
 const agentIdle = 5 * time.Minute
 
+// The in-stay receipt checkpoint runs every checkpointEvery; a run of transient broker failures ends
+// the stay once it has lasted checkpointGrace.
+var checkpointEvery, checkpointGrace = 5 * time.Second, 2 * time.Minute
+
 // The grant owns a stay; network streams are replaceable attachments to it.
 type agentStay struct {
 	meter     *agentMeter
@@ -261,8 +265,9 @@ func (n *engine) handleMCPIdle(s network.Stream, brokerURL string, client *http.
 		}
 	}()
 	go func() {
-		tick := time.NewTicker(5 * time.Second)
+		tick := time.NewTicker(checkpointEvery)
 		defer tick.Stop()
+		var failingSince time.Time
 		for {
 			select {
 			case <-done:
@@ -270,13 +275,26 @@ func (n *engine) handleMCPIdle(s network.Stream, brokerURL string, client *http.
 			case <-leaseEnded:
 				return
 			case <-tick.C:
-				if stop, err := receipt(false); err != nil || stop {
-					if err != nil {
-						n.recordError("agent receipt checkpoint: " + err.Error())
+				stop, err := receipt(false)
+				if err != nil {
+					n.recordError("agent receipt checkpoint: " + err.Error())
+					fmt.Fprintln(os.Stderr, "agent receipt checkpoint:", err)
+				}
+				// A broker restart or pod deploy (5xx, 408, 429, network error) is ridden out for
+				// checkpointGrace; the meter's last authenticated budget still bounds tool time meanwhile.
+				if err != nil && !stop && transientRegistration(err) {
+					if failingSince.IsZero() {
+						failingSince = time.Now()
 					}
+					if time.Since(failingSince) < checkpointGrace {
+						continue
+					}
+				}
+				if err != nil || stop {
 					shutdown("credit")
 					return
 				}
+				failingSince = time.Time{}
 			}
 		}
 	}()

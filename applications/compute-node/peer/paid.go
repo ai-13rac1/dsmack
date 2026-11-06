@@ -2,11 +2,9 @@ package main
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	payments "dsmack-payments"
 	"dsmack-peer/p2p"
@@ -19,10 +17,8 @@ func paidConfig() *payments.Config {
 	if raw == "" {
 		return nil
 	}
-	var cfg payments.Config
-	d := json.NewDecoder(strings.NewReader(raw))
-	d.DisallowUnknownFields()
-	must(d.Decode(&cfg))
+	cfg, e := payments.ParseConfig(raw)
+	must(e)
 	return &cfg
 }
 
