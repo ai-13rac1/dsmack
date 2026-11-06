@@ -59,6 +59,8 @@ export class Broker {
         out.admit_until = r.admit_until;
       }
     }
+    const unreachable = this.relays.get(r.relay_peer)?.unreachable;
+    if (unreachable) out.unreachable = unreachable;
     this.relays.set(r.relay_peer, out);
     return out;
   }

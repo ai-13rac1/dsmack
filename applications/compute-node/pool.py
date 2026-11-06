@@ -506,8 +506,11 @@ class Pool:
                     if node.get('readiness_failed'):
                         state = 'failed'
                     elif registered:
+                        # A registered replacement takes the slot; the predecessor only finishes a stay it holds.
+                        replaced = any(n['node'] and n['started'] > node['started'] for n in active)
                         state = ('draining' if now >= node['started'] + node['admit_seconds']
-                                 else 'busy' if registered.get('telemetry', {}).get('busy') else 'ready')
+                                 else 'busy' if registered.get('telemetry', {}).get('busy')
+                                 else 'draining' if replaced else 'ready')
                     elif (node['path']/'out/console-v3.log').exists():
                         state = 'attesting'
                 error = slot['last_error']

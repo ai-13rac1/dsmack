@@ -81,6 +81,22 @@ class PoolTests(unittest.TestCase):
         self.assertFalse(pool.should_replace([old, new], 570, 450))
         self.assertTrue(pool.should_replace([new], 900, 450))
 
+    def test_registered_replacement_takes_the_slot_unless_predecessor_holds_a_stay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); instance = self.instance(root)
+            instance.payments = {'node': '0xclass'}; instance.config = {}; instance.hardware = {}
+            now = pool.time.monotonic()
+            old = {'slot_id': 0, 'started': now - 1900, 'started_at': 1, 'admit_seconds': 3120, 'path': root,
+                   'node': {'relay_peer': 'old', 'telemetry': {'busy': False}}}
+            new = dict(old, started=now - 60, started_at=2, node=None)
+            instance.active = [old, new]
+            states = lambda: [s['state'] for s in instance.snapshot()['slots']]
+            self.assertEqual(states(), ['ready', 'launching'])
+            new['node'] = {'relay_peer': 'new', 'telemetry': {'busy': False}}
+            self.assertEqual(states(), ['draining', 'ready'])
+            old['node']['telemetry']['busy'] = True
+            self.assertEqual(states(), ['busy', 'ready'])
+
     def test_only_new_verified_matching_registration_is_ready(self):
         base = {'kind': 'compute', 'relay_peer': 'old', 'manifest_sha256': 'compose', 'os_image_hash': 'image',
                 'attestation': {'status': 'verified'}}
