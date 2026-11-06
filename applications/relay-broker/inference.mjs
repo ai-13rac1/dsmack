@@ -157,7 +157,7 @@ export class Inference {
       : action === "chat"
       ? ["sessionId", "body", "headers"]
       : action === "agent-open"
-      ? ["conversationId", "client_peer", "node_peer"]
+      ? ["conversationId", "client_peer", "node_peer", "browse"]
       : ["agent-status", "agent-end"].includes(action)
       ? ["sessionId"]
       : [];

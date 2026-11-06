@@ -1,4 +1,6 @@
+import base64
 import importlib.util
+import json
 from pathlib import Path
 import socket
 import threading
@@ -33,6 +35,78 @@ class MacRouteTests(unittest.TestCase):
                             peer.sendall(b'opaque reply');self.assertEqual(client.recv(1024),b'opaque reply')
                         dial.assert_called_once_with((server.resolved_hosts.get(host,host),443),timeout=10)
             finally:server.shutdown();t.join()
+
+
+class BrowsePolicyTests(unittest.TestCase):
+    POLICIES={'a'*32:{'mode':'open','hosts':[],'expires_at':2**40},'b'*32:{'mode':'named','hosts':['shop.example'],'expires_at':2**40}}
+    def connect(self,host,token=None,address='93.184.215.14'):
+        def policy(t):
+            if t not in self.POLICIES:raise PermissionError('unknown browse token')
+            return self.POLICIES[t]
+        auth=f'Proxy-Authorization: Basic {base64.b64encode(("browse:"+token).encode()).decode()}\r\n' if token else ''
+        with proxy.Server(('127.0.0.1',0),proxy.Handler) as server:
+            server.allowed_hosts={'pod.example.com'};server.package_hosts={'registry.npmjs.org'};server.policy=policy
+            t=threading.Thread(target=server.serve_forever);t.start()
+            try:
+                upstream,peer=socket.socketpair()
+                with peer,patch.object(proxy.socket,'getaddrinfo',return_value=[(2,1,6,'',(address,443))]),\
+                        patch.object(proxy.socket,'create_connection',return_value=upstream) as dial,socket.socket() as client:
+                    client.settimeout(2);client.connect(server.server_address)
+                    client.sendall(f'CONNECT {host}:443 HTTP/1.1\r\n{auth}\r\n'.encode())
+                    reply=client.recv(1024)
+                    return reply.split(b' ')[1].decode(),dial.call_args
+            finally:server.shutdown();t.join()
+
+    def test_package_hosts_need_no_token(self):
+        self.assertEqual(self.connect('registry.npmjs.org')[0],'200')
+
+    def test_without_a_token_only_operator_and_package_hosts(self):
+        self.assertEqual(self.connect('shop.example')[0],'403')
+
+    def test_named_admits_exactly_its_hosts_and_dials_the_checked_address(self):
+        status,call=self.connect('shop.example','b'*32)
+        self.assertEqual((status,call.args[0]),('200',('93.184.215.14',443)))
+        self.assertEqual(self.connect('other.example','b'*32)[0],'403')
+
+    def test_open_admits_public_hosts_and_refuses_private_loopback_and_cgnat(self):
+        self.assertEqual(self.connect('any.example','a'*32)[0],'200')
+        for address in ('192.168.1.10','127.0.0.1','10.0.0.1','100.64.0.1','169.254.169.254'):
+            self.assertEqual(self.connect('rebind.example','a'*32,address)[0],'403',address)
+
+    def test_unknown_token_is_refused(self):
+        self.assertEqual(self.connect('any.example','c'*32)[0],'403')
+
+    def test_browse_report_returns_the_policy_it_enforces(self):
+        with proxy.Server(('127.0.0.1',0),proxy.Handler) as server:
+            server.policy=lambda token:self.POLICIES[token]
+            t=threading.Thread(target=server.serve_forever);t.start()
+            try:
+                with socket.socket() as client:
+                    client.settimeout(2);client.connect(server.server_address)
+                    auth=base64.b64encode(('browse:'+'b'*32).encode()).decode()
+                    client.sendall(f'GET /browse HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n'.encode())
+                    self.assertEqual(json.loads(client.recv(4096).split(b'\r\n\r\n',1)[1]),self.POLICIES['b'*32])
+            finally:server.shutdown();t.join()
+
+    def test_policy_lookup_validates_caches_and_expires(self):
+        from http.server import BaseHTTPRequestHandler,HTTPServer
+        records={'d'*32:{'mode':'named','hosts':['shop.example'],'expires_at':2**40},'e'*32:{'mode':'named','hosts':['Bad_Host'],'expires_at':2**40},
+                 'f'*32:{'mode':'open','hosts':[],'expires_at':1}}
+        seen=[]
+        class Broker(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path);body=json.dumps(records[self.path.rsplit('/',1)[1]]).encode()
+                self.send_response(200);self.end_headers();self.wfile.write(body)
+            def log_message(self,*a):pass
+        with HTTPServer(('127.0.0.1',0),Broker) as broker:
+            t=threading.Thread(target=broker.serve_forever);t.start()
+            try:
+                server=proxy.Server.__new__(proxy.Server);server.browse_url=f'http://127.0.0.1:{broker.server_address[1]}/agent/browse/'
+                self.assertEqual(server.policy('d'*32)['hosts'],['shop.example']);server.policy('d'*32)
+                self.assertEqual(seen,['/agent/browse/'+'d'*32])
+                for token,message in (('e'*32,'malformed'),('f'*32,'expired'),('not-hex','unknown')):
+                    with self.assertRaisesRegex(PermissionError,message):server.policy(token)
+            finally:broker.shutdown();t.join()
 
 
 if __name__=='__main__':unittest.main()

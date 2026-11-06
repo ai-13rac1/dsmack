@@ -344,7 +344,7 @@ def main():
             ready(a.state/'tunnel.log',r'(Registered tunnel connection)',90)
             tunnel_address=public_ready(host)
             broker_host=urlsplit(a.broker).hostname;broker_address=resolve(broker_host)
-            start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port',str(proxy_port),'--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
+            start([sys.executable,ROOT/'applications/compute-node/connect-proxy.py','--listen','127.0.0.1','--port',str(proxy_port),'--allow-host',host,'--allow-host',urlsplit(a.broker).hostname,'--connection-seconds','3600','--browse-url',a.broker.rstrip('/')+'/agent/browse/','--resolve',host+'='+tunnel_address,'--resolve',broker_host+'='+broker_address],'proxy.log')
             hint=dict(url='wss://'+host+'/',relayPeer=relay,expiresAt=int(time.time())+3300)
             (a.state/'locator.json').write_text(json.dumps(hint,indent=2))
             published=True;republish(publish,[hint],False);last_http=time.monotonic()

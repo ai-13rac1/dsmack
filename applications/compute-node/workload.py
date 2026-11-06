@@ -11,6 +11,7 @@ import sys
 from urllib.parse import urlsplit
 
 NAME = 'compute-node-v1'
+PACKAGE_HOSTS = json.loads((Path(__file__).with_name('package-hosts.json')).read_text())
 MONITORS = json.loads((Path(__file__).resolve().parents[1] / 'egress-policy/monitor/registry.json').read_text())
 
 def canonical(v):
@@ -32,8 +33,10 @@ def manifest(starter, digest, binary, relay, broker, key, cdhash, seconds, proxy
         raise ValueError('Mac mode requires the host-loopback CONNECT proxy')
     environment = {'HTTPS_PROXY':proxy,'BROKER_GATEWAY':'http://127.0.0.1:18080','TUNNEL_INDEX':tunnel_index}
     description = canonical(MONITORS[monitor]).decode()
-    environment.update(DSMACK_MONITOR_POLICY=description,
-                       DSMACK_MONITOR_HASH=hashlib.sha256(description.encode()).hexdigest())
+    # Absent means none (monitor/registry.mjs); the runner contract reserves DSMACK_ env names, so only a real monitor sets them.
+    if monitor != 'none':
+        environment.update(DSMACK_MONITOR_POLICY=description,
+                           DSMACK_MONITOR_HASH=hashlib.sha256(description.encode()).hexdigest())
     egress = [{'destination': str(ipaddress.ip_network('192.168.127.254')), 'protocol':'tcp', 'port':proxy_url.port}]
     guest = guest or {'mem_mib': 4096, 'vcpus': 1}
     if any(type(guest.get(k)) is not int or guest[k] < 1 for k in ('mem_mib', 'vcpus')):
@@ -47,7 +50,10 @@ def manifest(starter, digest, binary, relay, broker, key, cdhash, seconds, proxy
                    'AGENT_RAW_OUTPUT_CAP_BYTES':'1048576','AGENT_IDLE_TIMEOUT_SECONDS':'300',
                    'AGENT_PI_VERSION':'1.4.0','AGENT_MCP_VERSION':'2026-07-28',
                    'DSTACK_SOCKET':'/root/dstack.sock','AGENT_CONFINEMENT':'readonly-rootfs-uid1000-workspace-tmpfs',
-                   'AGENT_NETWORK_ALLOWLIST':canonical([url.hostname, 'attested relay hostname from '+tunnel_index]).decode()},
+                   # The rule, not a stay's list: operator and package hosts always, plus whatever policy the broker
+                   # recorded for the stay's browse token (none, named hosts, or open to public addresses only).
+                   'AGENT_NETWORK_ALLOWLIST':canonical([url.hostname, 'attested relay hostname from '+tunnel_index, *PACKAGE_HOSTS,
+                       'per-stay browse policy from '+broker.rstrip('/')+'/agent/browse/TOKEN: none | named hosts | open to public IPv4 addresses']).decode()},
                'read_only':True, 'security_profile':'agent-sandbox-v1',
                'volumes':['artifacts:/workspace/artifacts:rw','/var/run/dstack.sock:/var/run/dstack.sock:ro']}
     if not 1 <= seconds <= 3600:
@@ -70,7 +76,7 @@ def manifest(starter, digest, binary, relay, broker, key, cdhash, seconds, proxy
                  {'name':'tool-server-log','path':'/workspace/artifacts/tool-server.log'},
                  {'name':'workspace-seal','path':'/workspace/artifacts/workspace-seal.bin'},
                  {'name':'workspace-seal-meta','path':'/workspace/artifacts/workspace-seal.json'}]})
-    m['limits'] = dict(m.get('limits',{}), timeout_s=seconds, workspace_max_bytes=256<<20, output_max_bytes=232<<20)
+    m['limits'] = dict(m.get('limits',{}), timeout_s=seconds, workspace_max_bytes=1<<30, output_max_bytes=232<<20)
     return canonical(m)
 
 if __name__ == '__main__':

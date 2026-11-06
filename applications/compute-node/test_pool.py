@@ -34,6 +34,21 @@ class PoolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '12.*14 cores.*4.*10 available'):
                 pool.operator_config(path, host)
 
+    def test_operator_browse_policy_is_validated_and_passed_to_the_heartbeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'operator.json'
+            host = {'mem_bytes': 64 << 30, 'cores': 14}
+            base = {'max_guests': 1, 'guest': {'mem_mib': 4096, 'vcpus': 1}, 'reserve': {'mem_gb': 16, 'cores': 4}}
+            browse = {'default': 'named', 'max': 'open', 'price': {'open_nano_usd_per_second': '5000', 'named_host_nano_usd_per_second': '100'}}
+            path.write_text(json.dumps(dict(base, browse=browse)))
+            self.assertEqual(pool.operator_config(path, host)['browse'], browse)
+            for bad in ({'default': 'open', 'max': 'named'}, {'default': 'wide', 'max': 'open'},
+                        {'default': 'none', 'max': 'open', 'price': {'open_nano_usd_per_second': 5000}},
+                        {'default': 'none', 'max': 'open', 'hosts': ['x.example']}):
+                path.write_text(json.dumps(dict(base, browse=bad)))
+                with self.assertRaisesRegex(ValueError, 'operator browse'):
+                    pool.operator_config(path, host)
+
     def test_operator_size_must_match_attested_resource_profile(self):
         config = {'guest': {'mem_mib': 8192, 'vcpus': 2}}
         manifest = {'base_vm': {'memory_mb': 8192, 'vcpus': 2},

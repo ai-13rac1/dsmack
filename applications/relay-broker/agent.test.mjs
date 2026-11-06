@@ -8,7 +8,7 @@ import { AgentSessions } from "./agent.mjs";
 import { canonical, signingKey } from "./grants.mjs";
 const hex = (v) => [...new Uint8Array(v)].map(v => v.toString(16).padStart(2,"0")).join("");
 const peer = "12D3KooWPXeq29kZzJxDgCA92X16PSiM5Bv1XxAshJ8wJzYv9k6x";
-async function fixture({ starter = "250000000", lifetime = 1800, initialized = true, inferenceCfg = {}, agentCfg = {} } = {}) {
+async function fixture({ starter = "250000000", lifetime = 1800, initialized = true, inferenceCfg = {}, agentCfg = {}, hostBrowse } = {}) {
  let now=2000000000;
  const wallet=Wallet.createRandom(), other=Wallet.createRandom();
  const key=await signingKey("12".repeat(32));
@@ -21,7 +21,7 @@ async function fixture({ starter = "250000000", lifetime = 1800, initialized = t
   attestation:{nodeBinding:{binding:{receiptSigner:receiptKey.address}}}};
  const broker={payments,inference,key,cfg:{agent:agentCfg},live:()=>[node],now:()=>now};
  let fleetSlots;
- const readFleet=async()=>[{publisher:"mac-one",online:true,received_at:now,updated_at:now,
+ const readFleet=async()=>[{publisher:"mac-one",online:true,received_at:now,updated_at:now,config:{max_guests:1,...(hostBrowse?{browse:hostBrowse}:{})},
   slots:fleetSlots??broker.live().map((n,slot_id)=>({slot_id,state:"ready",relay_peer:n.relay_peer}))}];
  const sessions=new AgentSessions(broker,readFleet);
  async function signed(action,extra={},who=wallet) {
@@ -29,7 +29,7 @@ async function fixture({ starter = "250000000", lifetime = 1800, initialized = t
   return {...body,sig:await who.signMessage(canonical(body))};
  }
  if(initialized)await inference.credit(await signed("credit"));
- async function open(who=wallet) {return sessions.open(await signed("agent-open",{conversationId:"conversation",client_peer:peer,node_peer:peer},who));}
+ async function open(who=wallet,browse) {return sessions.open(await signed("agent-open",{conversationId:"conversation",client_peer:peer,node_peer:peer,...(browse?{browse}:{})},who));}
  const sequences=new Map();
  async function receipt(sessionId,guestSeconds,final=false,wrongKey=false) {
   const sequence=(sequences.get(sessionId)??0)+1;sequences.set(sessionId,sequence);
@@ -358,4 +358,25 @@ test("directory distinguishes all slots busy from no online Macs, even without l
   f.advance(60);
   assert.equal((await (await get()).json()).error.code,"FLEET_EMPTY");
  } finally { await Deno.remove(dir,{recursive:true}); }
+});
+
+test("browse terms: the stay names its sites within the host's signed policy, priced by the host's surcharge, looked up by token",async()=>{
+ const plain=await fixture(),none=await plain.open();
+ assert.deepEqual({...none.browse,token:undefined},{mode:"none",hosts:[],nanoUsdPerSecond:"0",token:undefined});
+ assert.match(none.browse.token,/^[0-9a-f]{32}$/);
+ assert.equal(none.rateNanoUsdPerSecond,"15000");
+ assert.deepEqual(plain.sessions.browsePolicy(none.browse.token),{mode:"none",hosts:[],expires_at:none.grant.expires_at});
+ const hostBrowse={default:"named",max:"open",price:{open_nano_usd_per_second:"5000",named_host_nano_usd_per_second:"100"}};
+ const named=await (await fixture({hostBrowse})).open(undefined,{mode:"named",hosts:["shop.example","maps.example"]});
+ assert.deepEqual([named.browse.mode,named.browse.hosts,named.rateNanoUsdPerSecond],["named",["shop.example","maps.example"],"15200"]);
+ const wide=await fixture({hostBrowse}),open=await wide.open(undefined,{mode:"open",hosts:[]});
+ assert.equal(open.rateNanoUsdPerSecond,"20000");
+ assert.deepEqual(wide.sessions.browsePolicy(open.browse.token).mode,"open");
+ await wide.sessions.status(await wide.signed("agent-end",{sessionId:open.sessionId}),true);
+ assert.throws(()=>wide.sessions.browsePolicy(open.browse.token),/no live stay/);
+ assert.throws(()=>wide.sessions.browsePolicy("nothex"),/browse token required/);
+ const capped=await fixture({hostBrowse:{default:"none",max:"named"}});
+ await assert.rejects(capped.open(undefined,{mode:"open",hosts:[]}),/browse up to named/);
+ await assert.rejects(capped.open(undefined,{mode:"named",hosts:["Not A Host"]}),/browse must be/);
+ await assert.rejects(capped.open(undefined,{mode:"none",hosts:["shop.example"]}),/hosts only for named/);
 });

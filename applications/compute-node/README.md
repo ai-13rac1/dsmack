@@ -37,8 +37,15 @@ to the tool user. Shell commands can read installed system runtimes.
 A command has a maximum 120-second timeout. Pi truncates model-facing text to
 2000 lines or 50 KiB; commands producing more than 1 MiB of raw output stop.
 The measured compose records those caps, the tool versions, and network policy.
-The guest firewall permits the operator CONNECT proxy; that proxy enforces its
-host allowlist. The browser verifies the measured compose, image and App Attest
+The guest firewall permits the operator CONNECT proxy. The proxy admits the
+broker, the relay tunnel and the package hosts in `package-hosts.json` for every
+guest. Anything else follows the stay's browse policy: the guest's tool server
+forwards each CONNECT through a loopback forwarder that adds the stay's browse
+token, and the proxy looks the token up at `BROKER/agent/browse/TOKEN`. The
+policy is `none`, `named` (exactly the listed hosts) or `open` (any host whose
+every IPv4 address is public, so never loopback, the LAN, link-local or CGNAT).
+The manifest's `AGENT_NETWORK_ALLOWLIST` describes this rule, not a stay's list,
+so changing a host's policy or a stay's sites needs no new image or manifest. The browser verifies the measured compose, image and App Attest
 binding before sending a tool request.
 
 ## Build on zed
@@ -87,6 +94,12 @@ Write `~/.dsmack/operator.json` on the Mac:
 ```json
 {"max_guests":4,"guest":{"mem_mib":4096,"vcpus":1},"reserve":{"mem_gb":16,"cores":4}}
 ```
+
+Optionally add `"browse":{"default":"named","max":"open","price":{"open_nano_usd_per_second":"5000","named_host_nano_usd_per_second":"100"}}`
+to set how open guests' browsers may be. A stay asks for a mode up to `max`;
+without an ask it gets `default`. The broker adds the posted surcharge to the
+stay's rate. Without this field guests browse nothing beyond the package hosts.
+The field reaches the broker in the signed heartbeat.
 
 Optionally add `"region":{"name":"Michigan, US","lat":42,"lon":-84}` to
 publish a coarse location on the network map. Coordinates must be whole degrees.
