@@ -283,6 +283,27 @@ Include the existing `--ipfs-bin`, `--ipfs-car`, `--ipfs-state` and
 `--publication-rpc` options when present on the legacy command. Use a new stdout
 log as above; existing transport logs remain open through the handoff.
 
+### Disk
+
+Below 12 GiB free the pool offers no new slot, retries in five minutes and starts
+`dsmack_gc.py gc` once; the launcher waits instead of exiting. Every heartbeat
+carries `disk.free_bytes` and `disk.floor_bytes`. A launchd start reaps the
+stopped generations under its `--root`: each run no live launcher or process owns
+keeps `result.img.gz` (hash-checked) and its logs, and loses its scratch,
+workload, staged and partial disks.
+
+`dsmack_gc.py gc` keeps every `~/dsmack-*` directory that a LaunchAgent, a pool
+command JSON, a `restart.json`, a running process or `~/.dsmack/gc-pins` (one
+path per line) names, plus the directories their symlinks reach, plus the newest
+other release as rollback. It removes the other releases (directories with a
+`source` checkout or `pool-command.json`), first copying keys, configs, records
+and logs under 50 MB to `~/.dsmack/gc-keep/RELEASE/`. `--dry-run` prints the plan.
+Stage a release's checkout with `dsmack_gc.py source COMMIT RELEASE/source`
+(a worktree of the one bare repo at `~/.dsmack/dsmack.git`) and its images with
+`dsmack_gc.py store RELEASE`, which leaves APFS clones of
+`~/.dsmack/store/sha256/DIGEST` in place, so identical images across releases
+share blocks.
+
 ### Encrypted workspace store
 
 Run the loopback store with the existing Kubo API and an eth-account environment:

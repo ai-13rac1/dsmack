@@ -144,6 +144,37 @@ class PoolTests(unittest.TestCase):
             result = pool.preflight(Path('/state'), [{'path': Path('/owned')}])
             self.assertEqual(result['owned_runner_sessions'], ['/owned/session.json'])
 
+    def test_below_disk_floor_offers_no_slot_starts_one_gc_and_reports_free_disk(self):
+        low = SimpleNamespace(free=pool.DISK_FLOOR - 1)
+        running, failed = Mock(poll=Mock(return_value=None)), Mock(poll=Mock(return_value=2))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(pool.shutil, 'disk_usage', return_value=low), \
+                patch.object(pool, 'GC_LOG', Path(tmp)/'gc.log'), patch.object(pool, 'gc_started', None), \
+                patch.object(pool.subprocess, 'Popen', side_effect=[running, failed]) as popen:
+            with self.assertRaisesRegex(pool.DiskLow, 'floor; gc started, log'):
+                pool.preflight(Path('/state'), [])
+            with self.assertRaisesRegex(pool.DiskLow, 'gc running'):
+                pool.preflight(Path('/state'), [])
+            running.poll.return_value = 0
+            with self.assertRaisesRegex(pool.DiskLow, 'gc started'):
+                pool.preflight(Path('/state'), [])
+            for _ in range(2):
+                with self.assertRaisesRegex(pool.DiskLow, 'gc exited 2; not retried, see .*gc.log'):
+                    pool.preflight(Path('/state'), [])
+            self.assertEqual(popen.call_count, 2)
+            self.assertEqual(popen.call_args.args[0][1:], [str(pool.HERE/'dsmack_gc.py'), 'gc'])
+            self.assertEqual(popen.call_args.kwargs['stderr'], pool.subprocess.STDOUT)
+            self.assertEqual(popen.call_args.kwargs['stdout'].name, str(Path(tmp)/'gc.log'))
+        self.assertTrue(issubclass(pool.DiskLow, pool.MacOccupied))
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = self.instance(Path(tmp))
+            instance.launch.side_effect = pool.DiskLow('below floor')
+            instance.tick()
+            self.assertEqual(instance.event.call_args.args[0], 'disk_low')
+            self.assertGreater(instance.slots[0]['retry_at'], pool.time.monotonic() + 200)
+            instance.config = {'max_guests': 1}; instance.hardware = {}; instance.payments = {'node': '0x'+'0'*64}
+            with patch.object(pool.shutil, 'disk_usage', return_value=low):
+                self.assertEqual(instance.snapshot()['disk'], {'free_bytes': pool.DISK_FLOOR - 1, 'floor_bytes': pool.DISK_FLOOR})
+
     def test_shared_boot_lock_serializes_registration_across_pool_processes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
@@ -188,7 +219,7 @@ class PoolTests(unittest.TestCase):
     def instance(self, root):
         instance = object.__new__(pool.Pool)
         instance.args = SimpleNamespace(repo=Path('/repo'), cycles=0, replace_after=450, readiness_timeout=90,
-                                        debugfs=Path('/debugfs'), pool_root=None)
+                                        debugfs=Path('/debugfs'), pool_root=None, state=root)
         instance.boot_lock = None
         instance.active = []; instance.stopping = False; instance.failure = None
         instance.errors_file = root/'operator-errors.json'

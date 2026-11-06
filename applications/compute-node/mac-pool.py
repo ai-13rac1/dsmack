@@ -251,7 +251,7 @@ def main():
         if not path.is_file():raise FileNotFoundError(path)
     while not a.adopt_launcher:
         try:preflight(a.state,[],coexist_pools=a.coexist_pool+[a.state.parent]);break  # a killed predecessor's guests drain on their own
-        except MacOccupied:print('waiting for the active Mac lane',flush=True);time.sleep(10)
+        except MacOccupied as e:print(str(e),flush=True);time.sleep(10)
     transport_record=a.state.parent/'transports.json'
     if not a.adopt_launcher:
         reaped=reap_orphan_transports(transport_record)
