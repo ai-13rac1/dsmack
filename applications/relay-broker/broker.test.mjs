@@ -58,6 +58,12 @@ test("unregistered peers cannot get grants; a signed bind/1 relay proof admits t
   assert.equal(grant.expires_at, registered.expires_at);
 });
 
+test("a renewed registration keeps the last refused relay hop", async () => {
+  const b = broker();
+  (await b.register(r)).unreachable = { at: NOW, error: "RESOURCE_LIMIT_EXCEEDED" };
+  assert.deepEqual((await b.register(r)).unreachable, { at: NOW, error: "RESOURCE_LIMIT_EXCEEDED" });
+});
+
 test("a proof for another PeerId cannot enter discovery", async () => {
   const b = broker();
   const other = "12D3KooWPdcePFHp8pmoxdwpNC2ADNivvsCFYH8KPSfqutt7GWzA";
