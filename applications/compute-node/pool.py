@@ -22,6 +22,8 @@ import time
 from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 
+from key_rotation import KeyUnusable, KeyWatch, key_failure, kid_of
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -289,6 +291,8 @@ def preserve_and_retire(run, repo):
 
 
 class Pool:
+    keys = None
+
     def __init__(self, args):
         self.args = args
         self.boot_lock = None
@@ -317,6 +321,8 @@ class Pool:
         if args.publisher_key:
             from heartbeat import Publisher
             self.publisher = Publisher(args.publisher_key, args.publisher_address, args.broker, args.pool_version, args.operator)
+        if getattr(args, 'key_rotation', None):
+            self.keys = KeyWatch(args.key_rotation)
         self.started = time.monotonic()
 
     def remember_error(self, record):
@@ -366,6 +372,13 @@ class Pool:
             return None
 
     def launch(self, slot):
+        kid = kid_of(self.args.runner/'enrollment')
+        # The broker refuses a guest whose PAYMENTS_CONFIG pins a key other than the one its runner attests with.
+        pinned = self.payments.get('enrollmentKeyId')
+        if pinned and pinned.lower() != kid:
+            raise KeyUnusable(f'{kid}: the workload manifest pins enrollmentKeyId {pinned}')
+        if self.keys:
+            self.keys.require_live(kid)
         check = preflight(self.args.state, self.active, self.args.pool_root, self.args.coexist_pool)
         nodes = self.nodes()
         if nodes is None:
@@ -381,11 +394,11 @@ class Pool:
                                  str(self.args.seconds), self.profile], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         log.close()
         self.launched += 1
-        node = {'slot_id': slot['slot_id'], 'started_at': int(time.time()), 'process': proc, 'path': run, 'started': time.monotonic(), 'node': None, 'previous': baseline,
+        node = {'slot_id': slot['slot_id'], 'kid': kid, 'started_at': int(time.time()), 'process': proc, 'path': run, 'started': time.monotonic(), 'node': None, 'previous': baseline,
                 'admit_seconds': self.args.seconds-self.args.drain_seconds, 'readiness_deadline': time.monotonic()+self.args.readiness_timeout}
         self.active.append(node)
         slot['retry_pending'] = False
-        self.event('launch', slot_id=slot['slot_id'], run=str(run), driver_pid=proc.pid)
+        self.event('launch', slot_id=slot['slot_id'], run=str(run), driver_pid=proc.pid, kid=kid)
 
     def tick(self):
         if self.boot_lock and not any(n['node'] is None for n in self.active):
@@ -432,6 +445,8 @@ class Pool:
                         'exit_code': result.get('outputs', {}).get('exit_code'), 'driver_exit_code': proc.returncode}
                     (node['path']/'evidence/guest-error.json').write_text(json.dumps(slot['last_error'])+'\n')
                     self.remember_error({'at': int(time.time()), 'slot_id': slot['slot_id'], **slot['last_error']})
+                    if self.keys and node['kid'] and self.keys.observe(node['kid'], key_failure(node['path'], slot['last_error'])):
+                        self.event('key_suspect', kid=node['kid'], rotation_log=str(self.keys.rotate(node['kid'])))
                     external = closed and external_broker_error(slot['last_error'])
                     if not external:
                         slot['consecutive_failures'] += 1
@@ -445,6 +460,8 @@ class Pool:
                         self.event('guest_retry', slot_id=slot['slot_id'], retry_seconds=delay,
                                    consecutive_failures=slot['consecutive_failures'], last_error=slot['last_error'])
                 else:
+                    if self.keys and node['kid']:
+                        self.keys.observe(node['kid'], False)
                     slot['consecutive_failures'] = 0
                     slot.update(broker_backoff=0, retry_at=0, last_error=None)
                     self.event('retired', slot_id=slot['slot_id'], run=str(node['path']), last_error=result.get('error'), **cleanup)
@@ -490,6 +507,9 @@ class Pool:
                         self.launch(slot)
                     except MacOccupied:
                         self.event('waiting_for_other_lane', slot_id=slot['slot_id'])
+                    except KeyUnusable as error:
+                        slot['retry_at'] = now + 300
+                        self.event('key_unusable_no_launch', slot_id=slot['slot_id'], error=str(error), retry_seconds=300)
                     except BrokerUnavailable:
                         self.retry_broker(slot, self.last_broker_error)
                     break
@@ -571,6 +591,7 @@ def main():
     parser.add_argument('--replace-after', type=int, default=None)
     parser.add_argument('--readiness-timeout', type=int, default=90)
     parser.add_argument('--cycles', type=int, default=0, help='0 rotates continuously')
+    parser.add_argument('--key-rotation', type=Path, help='key_rotation.py config: mark a key dead after two signing failures and rotate it')
     args = parser.parse_args()
     if args.replace_after is None:
         args.replace_after = args.seconds//2 + 30
