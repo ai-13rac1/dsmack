@@ -85,8 +85,9 @@ near/sandbox.sh   # contracts on near-sandbox 2.14.0
 ```
 
 `core/tests/` ports `MacAppAttestV1.t.sol`, `Intermediate.t.sol` and `CDRegistry.t.sol`.
-The Apple fixtures have expired, so the sandbox tests use the `fixture-clock` build and
-set the clock to the timestamps of the Foundry tests.
+`tests/` ports `AppleAttestRegistryV1.t.sol`, except the canary verifier, which this
+contract does not have. The Apple fixtures have expired, so the sandbox tests use the
+`fixture-clock` build and set the clock to the timestamps of the Foundry tests.
 
 Clippy, in the same image:
 

@@ -92,14 +92,51 @@ async fn set_clock(e: &Env, secs: u64) {
     assert!(r.is_success());
 }
 
+/// The `set_build` and `register_build` arguments of a cd-args file in dsmack.
+fn build_args(sub: &str) -> Value {
+    let j = load(sub);
+    json!({"cd": b64(&hx(&j["cd"])), "page0": b64(&hx(&j["page0"])), "ent": b64(&hx(&j["ent"]))})
+}
+
+/// Register the build of a cd-args file and return its CDHash.
+async fn register(e: &Env, sub: &str) -> String {
+    let h = call(&e.owner, &e.contract, "register_build", build_args(sub), "").await.unwrap();
+    let cdhash = h.as_str().unwrap().to_string();
+    assert_eq!(cdhash, b64(&sha256(&hx(&load(sub)["cd"]))));
+    cdhash
+}
+
+/// Approve and register the build of a cd-args file, and return its CDHash.
+async fn approve_build(e: &Env, sub: &str) -> String {
+    call(&e.owner, &e.contract, "set_build", build_args(sub), "").await;
+    register(e, sub).await
+}
+
 /// Approve and register the build of dsmack's probe app, which Apple signs for the fixtures.
 async fn approve_probe_build(e: &Env) {
-    let j = load("contracts/fixtures/cd-args-probe-macos.json");
-    let args = json!({"cd": b64(&hx(&j["cd"])), "page0": b64(&hx(&j["page0"])), "ent": b64(&hx(&j["ent"]))});
-    call(&e.sb.dev_create_account().await.unwrap(), &e.contract, "set_build", args.clone(), "Smart contract panicked: owner").await;
-    call(&e.owner, &e.contract, "set_build", args.clone(), "").await;
-    let h = call(&e.owner, &e.contract, "register_build", args, "").await.unwrap();
-    assert_eq!(h.as_str().unwrap(), b64(&sha256(&hx(&j["cd"]))));
+    let probe = "contracts/fixtures/cd-args-probe-macos.json";
+    call(&e.sb.dev_create_account().await.unwrap(), &e.contract, "set_build", build_args(probe), "Smart contract panicked: owner").await;
+    approve_build(e, probe).await;
+}
+
+fn enroll_args(f: &Value, id: &str) -> Value {
+    json!({"id": id, "cert": b64(&hx(&f["cert"])), "auth": b64(&hx(&f["auth"])), "client_data": b64(&hx(&f["clientData"]))})
+}
+
+/// A sandbox with the probe build approved and the key of `fresh-apple.json` enrolled.
+async fn enrolled_mac() -> (Env, Value, Vec<u8>) {
+    let f = load("app-attest/contracts/fixtures/fresh-apple.json");
+    let kid = hx(&f["kid"]);
+    let e = setup(3, false, &hx(&f["aaguid"])).await;
+    set_clock(&e, FRESH_TIME).await;
+    approve_probe_build(&e).await;
+    let id = endorse_apple(&e).await;
+    call(&e.owner, &e.contract, "enroll", enroll_args(&f, &id), "").await;
+    (e, f, kid)
+}
+
+async fn evidence(e: &Env, consumer: &Account, kid: &[u8]) -> Value {
+    e.contract.view("evidence").args_json(json!({"consumer": consumer.id(), "kid": b64(kid)})).await.unwrap().json().unwrap()
 }
 
 async fn endorse_apple(e: &Env) -> String {
@@ -275,22 +312,126 @@ async fn production_build_reads_the_block_time() {
     call(&e.owner, &e.contract, "enroll", enroll, "certificate validity").await;
 }
 
-/// An iOS deployment: the iPhone fixture, category 5 and the iOS key ACL.
+/// An iOS deployment: the iPhone fixture, category 5 and the iOS key ACL. Port of
+/// `test_IPhoneEnrollAndAssertThroughRegistry` and `test_IPhoneUnregisteredBuildRejected`.
 #[tokio::test]
 async fn ios_deployment() {
     let f = load("app-attest/contracts/fixtures/iphone-apple.json");
     let kid = hx(&f["kid"]);
     let e = setup(5, true, &hx(&f["aaguid"])).await;
     set_clock(&e, 1_790_200_000).await;
-    let build = load("contracts/fixtures/resign/iphone-honest.json");
-    let args = json!({"cd": b64(&hx(&build["cd"])), "page0": b64(&hx(&build["page0"])), "ent": b64(&hx(&build["ent"]))});
-    call(&e.owner, &e.contract, "set_build", args.clone(), "").await;
-    call(&e.owner, &e.contract, "register_build", args, "").await;
+    let build = "contracts/fixtures/resign/iphone-honest.json";
+    call(&e.owner, &e.contract, "set_build", build_args(build), "").await;
     let id = endorse_apple(&e).await;
-    let enroll = json!({"id": id, "cert": b64(&hx(&f["cert"])), "auth": b64(&hx(&f["auth"])), "client_data": b64(&hx(&f["clientData"]))});
-    let got = call(&e.owner, &e.contract, "enroll", enroll, "").await.unwrap();
+    call(&e.owner, &e.contract, "enroll", enroll_args(&f, &id), "build not admitted").await;
+    register(&e, build).await;
+    let got = call(&e.owner, &e.contract, "enroll", enroll_args(&f, &id), "").await.unwrap();
     assert_eq!(got.as_str().unwrap(), b64(&kid));
     let a = e.sb.dev_create_account().await.unwrap();
     let (ctx, p) = proof(&f, "assert", &kid);
     call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await;
+    let (mctx, mp) = proof(&f, "modified", &kid);
+    call(&a, &e.contract, "verify", json!({"context": mctx, "proof": mp}), "build not admitted").await;
+}
+
+/// Evidence is stored only by a successful, fresh assertion. Port of
+/// `test_ReceiptEvidenceRequiresSuccessfulFreshAssertion`.
+#[tokio::test]
+async fn evidence_needs_a_fresh_assertion() {
+    let (e, f, kid) = enrolled_mac().await;
+    let a = e.sb.dev_create_account().await.unwrap();
+    assert_eq!(evidence(&e, &a, &kid).await, Value::Null);
+
+    let (ctx, p) = proof(&f, "assert", &kid);
+    call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await;
+    let ev = evidence(&e, &a, &kid).await;
+    assert_eq!(ev["context"], ctx.as_str());
+    assert_eq!(ev["cdhash"], b64(&hx(&f["cdhash"])).as_str());
+    assert_eq!(ev["rp"], b64(&hx(&f["appHash"])).as_str());
+    assert_eq!(ev["checked_at"], FRESH_TIME);
+    assert_eq!(ev["counter"], 1);
+
+    call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "assertion replay").await;
+    let (mctx, mp) = proof(&f, "modified", &kid);
+    call(&a, &e.contract, "verify", json!({"context": mctx, "proof": mp}), "build not admitted").await;
+    assert_eq!(evidence(&e, &a, &kid).await, ev);
+    let (rctx, rp) = proof(&f, "restored", &kid);
+    let mut other = [0u8; 32];
+    other[31] = 123;
+    call(&a, &e.contract, "verify", json!({"context": b64(&other), "proof": rp}), "assertion signature").await;
+    assert_eq!(evidence(&e, &a, &kid).await, ev);
+
+    call(&a, &e.contract, "verify", json!({"context": rctx, "proof": rp}), "").await;
+    let ev = evidence(&e, &a, &kid).await;
+    assert_eq!(ev["context"], rctx.as_str());
+    assert_eq!(ev["counter"], 3);
+}
+
+/// An enrolled key verifies after its leaf certificate expires. Port of
+/// `test_EnrolledKeyOutlivesLeaf`.
+#[tokio::test]
+async fn enrolled_key_outlives_its_leaf() {
+    let (e, f, kid) = enrolled_mac().await;
+    set_clock(&e, 1_789_761_030 + 30 * 86_400).await;
+    let a = e.sb.dev_create_account().await.unwrap();
+    let (ctx, p) = proof(&f, "assert", &kid);
+    let got = call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await.unwrap();
+    assert_eq!(got.as_str().unwrap(), b64(&kid));
+}
+
+/// A new approved build stops the keys of the earlier build at once. Port of the main
+/// verifier half of `test_SupersededBuildStopsKey`. The contract has no canary verifier.
+#[tokio::test]
+async fn new_build_stops_enrolled_keys() {
+    let (e, f, kid) = enrolled_mac().await;
+    call(&e.owner, &e.contract, "set_build", build_args("contracts/fixtures/cd-args-developer-id.json"), "").await;
+    let a = e.sb.dev_create_account().await.unwrap();
+    let (ctx, p) = proof(&f, "assert", &kid);
+    call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "build not admitted").await;
+}
+
+async fn developer_id(category: u32) -> (Env, Value, String) {
+    let f = load("contracts/fixtures/developer-id-apple.json");
+    let e = setup(category, false, &hx(&f["aaguid"])).await;
+    set_clock(&e, f["capturedAt"].as_u64().unwrap()).await;
+    let cdhash = approve_build(&e, "contracts/fixtures/cd-args-developer-id.json").await;
+    assert_eq!(cdhash, b64(&hx(&f["cdhash"])));
+    let id = endorse_apple(&e).await;
+    (e, f, id)
+}
+
+/// A Developer ID build enrolls under category 6, and a release Development build
+/// registers under the same approved build. Port of
+/// `test_DeveloperIDEnrollmentThroughRegistry` and
+/// `test_ReleaseDevelopmentAndDeveloperIDShareCodeBaseline`.
+#[tokio::test]
+async fn developer_id_enrollment() {
+    let (e, f, id) = developer_id(6).await;
+    let got = call(&e.owner, &e.contract, "enroll", enroll_args(&f, &id), "").await.unwrap();
+    assert_eq!(got.as_str().unwrap(), b64(&hx(&f["kid"])));
+    let release = "contracts/fixtures/cd-args-release-development.json";
+    assert_eq!(register(&e, release).await, b64(&hx(&load(release)["cdhash"])));
+}
+
+/// A Developer ID enrollment fails under the Apple Development category. Port of
+/// `test_DeveloperIDNotAcceptedAsDevelopmentSigning`.
+#[tokio::test]
+async fn developer_id_is_not_development_signing() {
+    let (e, f, id) = developer_id(3).await;
+    call(&e.owner, &e.contract, "enroll", enroll_args(&f, &id), "validation category").await;
+}
+
+/// Two copies signed by different teams resolve to their own App ID hash, so the
+/// CDHash of one team does not admit the App ID of the other. Port of
+/// `test_SyntheticTeamLookup`.
+#[tokio::test]
+async fn registry_keeps_teams_apart() {
+    let e = setup(3, false, b"appattest\0\0\0\0\0\0\0").await;
+    let ours = approve_build(&e, "contracts/fixtures/resign/node-honest.json").await;
+    let other = register(&e, "contracts/fixtures/resign/node-synthetic-team.json").await;
+    assert_ne!(ours, other);
+    for (cdhash, app) in [(ours, "DC9JH5DRMY.dev.dsmack.provider"), (other, "TESTTEAM01.dev.dsmack.provider")] {
+        let rp: Value = e.contract.view("rp_id_hash").args_json(json!({ "cdhash": cdhash })).await.unwrap().json().unwrap();
+        assert_eq!(rp, b64(&sha256(app.as_bytes())).as_str());
+    }
 }
