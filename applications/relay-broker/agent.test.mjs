@@ -500,3 +500,36 @@ test("a draining broker offers no new stays",async()=>{
  assert.equal(f.sessions.available(node),false);
  await assert.rejects(f.sessions.open(await f.signed("agent-open",{conversationId:"drained",client_peer:peer,node_peer:node.relay_peer})),e=>e.code==="GUEST_BUSY");
 });
+
+// Guest Unix seconds and broker Unix seconds can straddle a second boundary.
+test("guest receipt clock skew does not retire a stay", async () => {
+ const f = await fixture(), { sessionId } = await f.open();
+ const start = await f.receipt(sessionId, 0);
+ assert.equal((await f.sessions.receipt(start)).stop, false);
+ f.advance(5);
+ const checkpoint = await f.receipt(sessionId, 1);
+ f.advance(-1); // Incident: receipt 01:57:12 received at 01:57:11.953Z.
+ assert.equal((await f.sessions.receipt(checkpoint)).stop, false);
+ assert.equal((await f.sessions.receipt(checkpoint)).stop, false);
+ // Keep the skew bounded, and still reject an older signed sequence.
+ f.advance(6);
+ const future = await f.receipt(sessionId, 1);
+ f.advance(-6);
+ await assert.rejects(f.sessions.receipt(future), e => e.code === "GUEST_USAGE");
+ f.advance(2);
+ const older = await f.receipt(sessionId, 1);
+ const newer = await f.receipt(sessionId, 1);
+ await f.sessions.receipt(newer);
+ await assert.rejects(f.sessions.receipt(older), e => e.code === "GUEST_USAGE");
+ const final = await f.receipt(sessionId, 1, true);
+ assert.equal((await f.sessions.receipt(final)).stop, true);
+ assert.equal(f.payments.state.agentSessions[sessionId].final, true);
+});
+
+test("a slightly slow guest clock can submit its start receipt", async () => {
+ const f = await fixture(), { sessionId } = await f.open();
+ f.advance(-1);
+ const start = await f.receipt(sessionId, 0);
+ f.advance(1);
+ assert.equal((await f.sessions.receipt(start)).stop, false);
+});

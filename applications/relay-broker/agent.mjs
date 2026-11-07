@@ -10,6 +10,7 @@ const need = (ok, code, message, status = 400) => {
 };
 const id = (value) => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 const activeWindowSeconds = 60;
+const receiptClockSkewSeconds = 5;
 const BROWSE = ["none", "named", "open"];
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 
@@ -203,9 +204,14 @@ export class AgentSessions {
           activeBudgetSeconds: s.activeBudgetSeconds };
       }
       const used = Number(receipt.used), final = receipt.finalReceipt;
-      need(receipt.endedAt >= (s.receipt?.endedAt ?? s.openedAt) && receipt.endedAt <= b.now() &&
-        receipt.endedAt <= s.grant.expires_at && receipt.sequence > (s.receipt?.sequence ?? 0),
-        "GUEST_USAGE", "receipt time or sequence regressed", 409);
+      need(receipt.sequence > (s.receipt?.sequence ?? 0),
+        "GUEST_USAGE", "receipt sequence regressed", 409);
+      // Guest and broker clocks are independent. Keep guest-to-guest ordering
+      // strict, but allow small skew against the broker's wall clock. Usage is
+      // signed separately and remains bounded by the reserved active budget.
+      need(receipt.endedAt >= (s.receipt?.endedAt ?? s.openedAt - receiptClockSkewSeconds) &&
+        receipt.endedAt <= b.now() + receiptClockSkewSeconds && receipt.endedAt <= s.grant.expires_at,
+        "GUEST_USAGE", "receipt timestamp outside stay bounds or regressed", 409);
       need(used >= s.guestSeconds && used <= s.grant.seconds && used <= s.activeBudgetSeconds,
         "GUEST_USAGE", "guest seconds must be monotonic and within the active reserved budget", 409);
       need(!s.final, "SESSION_CLOSED", "session receipt is already final", 409);
