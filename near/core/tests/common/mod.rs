@@ -1,9 +1,13 @@
 //! Shared test code: RustCrypto primitives and the Apple fixtures of this repository.
 #![allow(dead_code)]
 
-use dsmack_attest_core::{Crypto, Result};
+use dsmack_attest_core::attest::{self, Asserted, Enrolled, Key, Platform, Policy};
+use dsmack_attest_core::intermediate::{self, Intermediate, APPLE_ROOT_KEY};
+use dsmack_attest_core::{Crypto, Error, Result};
 use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use sha2::{Digest, Sha256, Sha384};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 pub struct Native;
 
@@ -94,6 +98,91 @@ impl Fixture {
         let mut input = self.auth.clone();
         input.extend_from_slice(&Native.sha256(&self.client_data));
         Native.sha256(&input)
+    }
+}
+
+/// Which builds a model accepts.
+pub enum Admit {
+    /// Solidity `MacAppAttestV1`: one App ID and one CDHash.
+    Fixed { app_hash: [u8; 32], cdhash: [u8; 32] },
+    /// Solidity test `RotationAttest`: everything.
+    Open,
+}
+
+/// The state that the contract keeps, as plain maps.
+pub struct Model {
+    pub platform: Platform,
+    pub admit: Admit,
+    pub root: [u8; 96],
+    pub intermediates: HashMap<[u8; 32], Intermediate>,
+    pub keys: RefCell<HashMap<[u8; 32], Key>>,
+    pub now: u64,
+}
+
+struct View<'a>(&'a Model);
+
+impl Policy for View<'_> {
+    fn admit(&self, cdhash: &[u8; 32], rp: &[u8; 32]) -> Result<()> {
+        match &self.0.admit {
+            Admit::Open => Ok(()),
+            Admit::Fixed { app_hash, cdhash: want } => {
+                if rp != app_hash {
+                    return Err(Error("app identity"));
+                }
+                if cdhash != want {
+                    return Err(Error("current CDHash"));
+                }
+                Ok(())
+            }
+        }
+    }
+    fn is_enrolled(&self, kid: &[u8; 32]) -> bool {
+        self.0.keys.borrow().contains_key(kid)
+    }
+}
+
+impl Model {
+    pub fn mac(f: &Fixture, category: u32, ios: bool, now: u64) -> Model {
+        Model {
+            platform: Platform { aaguid: f.aaguid, category, ios },
+            admit: Admit::Fixed { app_hash: f.app_hash, cdhash: f.cdhash },
+            root: APPLE_ROOT_KEY,
+            intermediates: HashMap::new(),
+            keys: RefCell::new(HashMap::new()),
+            now,
+        }
+    }
+
+    pub fn with_apple_intermediate(mut self) -> (Model, [u8; 32]) {
+        let id = self.endorse(&read("apple-intermediate.der")).unwrap();
+        (self, id)
+    }
+
+    pub fn endorse(&mut self, der: &[u8]) -> Result<[u8; 32]> {
+        let ca = intermediate::endorse(&Native, &self.root, der, self.now)?;
+        let id = ca.id(&Native);
+        if self.intermediates.contains_key(&id) {
+            return Err(Error("already endorsed"));
+        }
+        self.intermediates.insert(id, ca);
+        Ok(id)
+    }
+
+    pub fn enroll(&self, id: &[u8; 32], cert: &[u8], auth: &[u8], client_data: &[u8]) -> Result<[u8; 32]> {
+        let e: Enrolled = attest::enroll(&Native, &self.platform, &View(self), self.intermediates.get(id), cert, auth, client_data, self.now)?;
+        self.keys.borrow_mut().insert(e.kid, e.key);
+        Ok(e.kid)
+    }
+
+    pub fn verify(&self, kid: &[u8; 32], auth: &[u8], context: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> Result<[u8; 32]> {
+        let key = self.keys.borrow().get(kid).cloned();
+        let a: Asserted = attest::verify(&Native, &self.platform, &View(self), key.as_ref(), auth, context, r, s, self.now)?;
+        self.keys.borrow_mut().get_mut(kid).unwrap().counter = a.counter;
+        Ok(*kid)
+    }
+
+    pub fn counter(&self, kid: &[u8; 32]) -> u32 {
+        self.keys.borrow()[kid].counter
     }
 }
 

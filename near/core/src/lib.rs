@@ -2,6 +2,7 @@
 //! (`app-attest/contracts/src`). Every check returns the same message as the
 //! Solidity `require` that it replaces.
 
+pub mod attest;
 pub mod authdata;
 pub mod crypto;
 pub mod der;
