@@ -10,6 +10,7 @@ pub mod error;
 pub mod ext;
 pub mod intermediate;
 pub mod leaf;
+pub mod registry;
 
 pub use crypto::Crypto;
 pub use error::{Error, Result};

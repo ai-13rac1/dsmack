@@ -18,6 +18,9 @@ impl Crypto for Native {
     fn sha384(&self, data: &[u8]) -> [u8; 48] {
         Sha384::digest(data).into()
     }
+    fn keccak256(&self, data: &[u8]) -> [u8; 32] {
+        sha3::Keccak256::digest(data).into()
+    }
     fn p384_verify_prehash(&self, pub_xy: &[u8; 96], prehash: &[u8], sig: &[u8; 96]) -> bool {
         let mut sec1 = [0u8; 97];
         sec1[0] = 4;
