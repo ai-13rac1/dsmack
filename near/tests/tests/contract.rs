@@ -435,3 +435,41 @@ async fn registry_keeps_teams_apart() {
         assert_eq!(rp, b64(&sha256(app.as_bytes())).as_str());
     }
 }
+
+/// `verify` treats signature values as the P-256 precompile of the Solidity (RIP-7212)
+/// does: both `s` and `n - s` verify, and zero or out-of-range values fail. Apple signs
+/// with either form: `fresh-apple.json` `assert` has a high S.
+#[tokio::test]
+async fn verify_checks_the_signature_values() {
+    const N: &str = "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551";
+    let (e, f, kid) = enrolled_mac().await;
+    let (ctx, p) = proof(&f, "assert", &kid);
+    let with = |r: &[u8], s: &[u8]| {
+        let mut q = p.clone();
+        q["r"] = json!(b64(r));
+        q["s"] = json!(b64(s));
+        json!({"context": ctx, "proof": q})
+    };
+    let r = hx(&f["assert"]["r"]);
+    let s = hx(&f["assert"]["s"]);
+    let n = hex::decode(N).unwrap();
+    // other_s = n - s, big-endian subtraction.
+    let mut other_s = [0u8; 32];
+    let mut borrow = 0i16;
+    for i in (0..32).rev() {
+        let mut d = n[i] as i16 - s[i] as i16 - borrow;
+        borrow = (d < 0) as i16;
+        d += 256 * borrow;
+        other_s[i] = d as u8;
+    }
+    let zero = [0u8; 32];
+    let ones = [0xffu8; 32];
+    let b = e.sb.dev_create_account().await.unwrap();
+    for (rv, sv) in [(&zero[..], &s[..]), (&r[..], &zero[..]), (&n[..], &s[..]), (&r[..], &n[..]), (&ones[..], &ones[..])] {
+        call(&b, &e.contract, "verify", with(rv, sv), "assertion signature").await;
+    }
+    let a = e.sb.dev_create_account().await.unwrap();
+    call(&a, &e.contract, "verify", with(&r, &other_s), "").await;
+    // The second form of the signature does not give a second use of the assertion.
+    call(&a, &e.contract, "verify", with(&r, &s), "assertion replay").await;
+}
