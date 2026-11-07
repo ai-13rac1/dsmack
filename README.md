@@ -64,6 +64,7 @@ verification and cleanup.
 | [`applications/payments/`](applications/payments/README.md) | Base Sepolia allowance, metering and settlement loop |
 | [`app-attest/`](app-attest/README.md) | App Attest verification in Solidity and a Noir proof circuit |
 | [`contracts/`](contracts/DEPLOY.md) | Approved-code and App Attest key registries; bounty escrow in `work-escrow/` |
+| [`near/`](near/README.md) | App Attest verification and the approved-code registry as a NEAR contract |
 | [`runner-vm/`](runner-vm/README.md) | Signed macOS app and its libkrun/Apple Hypervisor backend |
 | [`base-vm/browser-sandbox-v1/`](base-vm/browser-sandbox-v1/README.md) | Linux guest, container runtime and input/output transport |
 | [`applications/pilot-client/`](applications/pilot-client/README.md) | Shared Mac installation, launch, workload preparation and Linux verification tools |

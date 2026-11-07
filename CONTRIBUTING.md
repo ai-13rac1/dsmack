@@ -24,6 +24,10 @@ scripts need flock.
 then sources `app-attest/circuit/env.sh` for the Foundry projects, leaf circuit
 proofs and real-proof enrollment tests.
 
+The NEAR contract in `near/` has its own tests, which run in a Rust container with
+Podman: `near/test.sh`, then `near/build.sh` and `near/sandbox.sh`. See
+[near/README.md](near/README.md).
+
 Documentation changes need link checks and `git diff --check`.
 
 Release signing and download inspection: [docs/release/releasing.md](docs/release/releasing.md).
