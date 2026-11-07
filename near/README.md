@@ -63,6 +63,7 @@ the wrong length panics with `<name> must be <n> bytes`.
 | `contract/` | The NEAR contract. |
 | `examples/consumer/` | A contract that calls `verify`. |
 | `tests/` | Sandbox tests of the contracts. |
+| `tools/capture_from_device.py` | Turns the files that a Mac writes for App Attest into a capture, and checks them. |
 | `tools/capture_args.py` | Turns a capture from `app-attest/contracts/fixtures` into contract arguments. |
 
 ## Build

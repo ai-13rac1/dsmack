@@ -26,7 +26,8 @@ proofs and real-proof enrollment tests.
 
 The NEAR contract in `near/` has its own tests, which run in a Rust container with
 Podman: `near/test.sh`, then `near/build.sh` and `near/sandbox.sh`. See
-[near/README.md](near/README.md).
+[near/README.md](near/README.md). The tests of its Python tools in `near/tools` run in
+the python suite of `./test.sh`.
 
 Documentation changes need link checks and `git diff --check`.
 

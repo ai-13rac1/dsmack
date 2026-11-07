@@ -29,8 +29,12 @@ Run these calls in order. All arguments are base64.
    admitted. The result is the copy's CDHash.
 4. Anyone calls `endorse_intermediate` with Apple's App Attestation CA certificate (DER).
    The result is the intermediate's `id`. Attach a deposit for the storage.
-5. A device enrolls: `tools/capture_args.py capture.json enroll <id>` gives the arguments
-   of `enroll`. Attach a deposit for the storage.
+5. A device enrolls. `tools/capture_from_device.py` turns the output of `mar enroll` and
+   the device's assertions into `capture.json`, and checks the key ID and the assertion
+   signatures. It needs the `cryptography` package of `requirements.txt`. Then
+   `tools/capture_args.py capture.json enroll <id>` gives the arguments of `enroll`.
+   Attach a deposit for the storage. The leaf certificate is valid for 3 days, so enroll
+   within 3 days of the capture.
 6. A consumer contract calls `verify` with an assertion:
    `tools/capture_args.py capture.json verify <assertion-name>`.
 
