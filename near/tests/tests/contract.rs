@@ -347,7 +347,8 @@ async fn evidence_needs_a_fresh_assertion() {
     assert_eq!(evidence(&e, &a, &kid).await, Value::Null);
 
     let (ctx, p) = proof(&f, "assert", &kid);
-    call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await;
+    let got = call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await.unwrap();
+    assert_eq!(got, json!({"kid": b64(&kid), "cdhash": b64(&hx(&f["cdhash"])), "rp": b64(&hx(&f["appHash"])), "counter": 1}));
     let ev = evidence(&e, &a, &kid).await;
     assert_eq!(ev["context"], ctx.as_str());
     assert_eq!(ev["cdhash"], b64(&hx(&f["cdhash"])).as_str());
@@ -380,7 +381,7 @@ async fn enrolled_key_outlives_its_leaf() {
     let a = e.sb.dev_create_account().await.unwrap();
     let (ctx, p) = proof(&f, "assert", &kid);
     let got = call(&a, &e.contract, "verify", json!({"context": ctx, "proof": p}), "").await.unwrap();
-    assert_eq!(got.as_str().unwrap(), b64(&kid));
+    assert_eq!(got["kid"], b64(&kid).as_str());
 }
 
 /// A new approved build stops the keys of the earlier build at once. Port of the main

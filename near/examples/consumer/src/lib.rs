@@ -13,9 +13,18 @@ pub struct Proof {
     pub s: Base64VecU8,
 }
 
+/// The result of `verify`.
+#[near(serializers = [json])]
+pub struct Verified {
+    pub kid: Base64VecU8,
+    pub cdhash: Base64VecU8,
+    pub rp: Base64VecU8,
+    pub counter: u32,
+}
+
 #[ext_contract(ext_dsmack)]
 pub trait Dsmack {
-    fn verify(&mut self, context: Base64VecU8, proof: Proof) -> Base64VecU8;
+    fn verify(&mut self, context: Base64VecU8, proof: Proof) -> Verified;
 }
 
 #[near(contract_state)]
@@ -56,11 +65,11 @@ impl Consumer {
         &mut self,
         user: AccountId,
         deposit: NearToken,
-        #[callback_result] result: Result<Base64VecU8, PromiseError>,
+        #[callback_result] result: Result<Verified, PromiseError>,
     ) -> bool {
         match result {
-            Ok(kid) => {
-                self.last_kid = Some(kid);
+            Ok(v) => {
+                self.last_kid = Some(v.kid);
                 true
             }
             Err(_) => {

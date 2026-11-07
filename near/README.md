@@ -6,7 +6,7 @@ port of the Solidity verifiers in [`app-attest/`](../app-attest/README.md) and
 [`contracts/`](../contracts/DEPLOY.md).
 
 One contract holds the endorsed Apple intermediates, the enrolled keys and the
-approved builds. Another contract calls `verify` and reads the key ID in a
+approved builds. Another contract calls `verify` and reads the result in a
 callback. [`examples/consumer`](examples/consumer/src/lib.rs) shows the call.
 
 ## Contract
@@ -29,8 +29,10 @@ All byte arguments are base64.
 - `endorse_intermediate` checks an Apple App Attestation CA against Apple's root key.
 - `enroll` checks the certificate chain, the nonce, the key ACL, the authenticator data
   and that the build is admitted. It stores the key.
-- `verify` checks an assertion by an enrolled key. The assertion counter and the evidence
-  belong to the calling account, so a caller cannot use up the counter of another. An
+- `verify` checks an assertion by an enrolled key. It returns `kid`, the `cdhash` and
+  App ID hash `rp` of the build that made the assertion, and `counter`, so the callback
+  has them without a second call. The assertion counter and the evidence belong to the
+  calling account, so a caller cannot use up the counter of another. An
   assertion is therefore fresh once for each calling account: a consumer derives
   `context` on chain from its own account ID and the action, and never takes it from
   the user.

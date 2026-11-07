@@ -79,6 +79,15 @@ pub struct EvidenceView {
     pub counter: u32,
 }
 
+/// The result of `verify`: the key, the build that signed the assertion, and the counter.
+#[near(serializers = [json])]
+pub struct Verified {
+    pub kid: Base64VecU8,
+    pub cdhash: Base64VecU8,
+    pub rp: Base64VecU8,
+    pub counter: u32,
+}
+
 #[near(serializers = [json])]
 pub struct IntermediateView {
     pub subject: Base64VecU8,
@@ -259,15 +268,15 @@ impl Dsmack {
 
     /// Check an assertion by an enrolled key over `context` (the 32-byte
     /// `clientDataHash` that the app asserted). The counter and the evidence belong to
-    /// the calling account. Returns the key ID. Attach a deposit for the first call of
-    /// a key from an account.
+    /// the calling account. Returns the key ID, the CDHash and App ID hash of the build,
+    /// and the counter. Attach a deposit for the first call of a key from an account.
     ///
     /// An assertion is fresh once for each calling account, so the caller must make
     /// `context` bind the action: derive it on chain from its own account ID and the
     /// action, and never take it from the user. A `context` that does not commit to the
     /// caller accepts an assertion that was made for another consumer.
     #[payable]
-    pub fn verify(&mut self, context: Base64VecU8, proof: Proof) -> Base64VecU8 {
+    pub fn verify(&mut self, context: Base64VecU8, proof: Proof) -> Verified {
         let before = env::storage_usage();
         let kid: B32 = fixed(&proof.kid, "kid");
         let context: B32 = fixed(&context, "context");
@@ -292,7 +301,12 @@ impl Dsmack {
         );
         self.evidence.flush();
         settle(before);
-        Base64VecU8(kid.to_vec())
+        Verified {
+            kid: Base64VecU8(kid.to_vec()),
+            cdhash: Base64VecU8(a.cdhash.to_vec()),
+            rp: Base64VecU8(a.rp.to_vec()),
+            counter: a.counter,
+        }
     }
 
     pub fn key(&self, kid: Base64VecU8) -> Option<KeyView> {
