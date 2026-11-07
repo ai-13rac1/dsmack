@@ -54,7 +54,8 @@ export class AgentSessions {
   }
   /** @param {{publisher: string, slot_id: number}} [placement] */
   available(node, placement = undefined) {
-    return !node.telemetry?.busy && !Object.values(this.b.payments?.state.agentSessions ?? {})
+    // A draining broker offers no new stays; running ones continue to their end.
+    return !this.b.draining && !node.telemetry?.busy && !Object.values(this.b.payments?.state.agentSessions ?? {})
       .some(s => this.active(s) &&
         (s.node.relay_peer === node.relay_peer || (placement && s.placement?.publisher === placement.publisher &&
           s.placement.slot_id === placement.slot_id)));

@@ -490,3 +490,13 @@ test("concurrent capped retry creates one durable reservation and failed save ca
  assert.equal(Object.keys(broken.payments.state.agentSessions??{}).length,0);
  assert.equal(broken.inference.summary(broken.wallet.address.toLowerCase()).spentNanoUsd,"0");
 });
+
+test("a draining broker offers no new stays",async()=>{
+ const f=await fixture();
+ const node={...f.node,telemetry:{busy:false}};
+ f.broker.live=()=>[node];
+ assert.equal(f.sessions.available(node),true);
+ f.broker.draining=true;
+ assert.equal(f.sessions.available(node),false);
+ await assert.rejects(f.sessions.open(await f.signed("agent-open",{conversationId:"drained",client_peer:peer,node_peer:node.relay_peer})),e=>e.code==="GUEST_BUSY");
+});
