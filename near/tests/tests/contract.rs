@@ -257,6 +257,10 @@ async fn storage_is_paid_by_the_caller() {
         call_deposit(&e.owner, &e.contract, "endorse_intermediate", args.clone(), d, "yoctoNEAR for storage").await;
     }
     call(&e.owner, &e.contract, "endorse_intermediate", args, "").await;
+    // set_build stores the build ID in a LookupSet, which writes at once, so the call pays.
+    let build = build_args("contracts/fixtures/cd-args-probe-macos.json");
+    call_deposit(&e.owner, &e.contract, "set_build", build.clone(), NearToken::from_yoctonear(0), "yoctoNEAR for storage").await;
+    call(&e.owner, &e.contract, "set_build", build, "").await;
 }
 
 /// The views follow the current build, and a view rejects a value of the wrong length.
