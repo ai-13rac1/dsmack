@@ -1,0 +1,7 @@
+[package]
+name = "dsmack-attest-core"
+version = "0.1.0"
+edition = "2021"
+description = "Apple App Attest certificate, authenticator data and assertion checks, with no chain dependency"
+
+[dependencies]
