@@ -1,0 +1,18 @@
+[package]
+name = "dsmack-near"
+version = "0.1.0"
+edition = "2021"
+description = "NEAR contract that verifies Apple App Attest enrollments and assertions"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.30", default-features = false }
+dsmack-attest-core = { path = "../core" }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+sha2 = { version = "0.10", default-features = false }
+
+[features]
+# Test builds only: reads the clock from storage so that expired Apple fixtures verify.
+fixture-clock = []
