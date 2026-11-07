@@ -37,8 +37,11 @@ Run these calls in order. All arguments are base64.
 After step 1, delete every full-access key of the contract account. A holder of such a
 key can deploy different code, and this contract is a trust root for its consumers.
 
-A consumer derives `context` on chain from its own account ID and the action, because
-an assertion is fresh once for each calling account.
+A consumer derives `context` on chain from its own account ID, the account that receives
+the result of the action, and the action, as `examples/consumer` does. An assertion is
+fresh once for each calling account, and NEAR nodes see a transaction before it runs:
+without the receiver in `context`, another account can send a copy of the proof first and
+receive the result.
 
 `set_build` replaces the approved build. Keys that enrolled under an earlier build stop
 verifying until their CDHash resolves under the new build.

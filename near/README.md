@@ -34,8 +34,9 @@ All byte arguments are base64.
   has them without a second call. The assertion counter and the evidence belong to the
   calling account, so a caller cannot use up the counter of another. An
   assertion is therefore fresh once for each calling account: a consumer derives
-  `context` on chain from its own account ID and the action, and never takes it from
-  the user.
+  `context` on chain from its own account ID, the account that receives the result of
+  the action, and the action, and never takes it from the user. Without the receiver,
+  another account can send a copy of the proof first and receive the result.
 
 Calls that store data take an attached deposit for the storage. The contract returns
 the rest. Views: `key`, `evidence`, `intermediate`, `rp_id_hash`, `team_id_hash`,
@@ -72,8 +73,9 @@ You need Podman.
 near/build.sh
 ```
 
-This writes `near/out/dsmack_near.wasm`, which you deploy, `dsmack_near_fixture_clock.wasm`
-and `dsmack_consumer.wasm` for the sandbox tests. [DEPLOY.md](DEPLOY.md) explains how to
+This writes `near/out/dsmack_near.wasm`, which you deploy, and for the sandbox tests
+`dsmack_near_fixture_clock.wasm`, the example consumer `dsmack_consumer.wasm` and its test
+build `dsmack_consumer_fixture_context.wasm`, which takes a fixture's context as the action. [DEPLOY.md](DEPLOY.md) explains how to
 deploy and set up the contract.
 
 ## Test

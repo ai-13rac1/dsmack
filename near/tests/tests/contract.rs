@@ -199,41 +199,42 @@ async fn enrollment_needs_an_admitted_build() {
     call(&e.owner, &e.contract, "enroll", enroll, "build not admitted").await;
 }
 
-/// A consumer contract calls `verify` and reads the key ID in a callback.
+async fn deploy_consumer(e: &Env, wasm_name: &str) -> Contract {
+    let wasm = std::fs::read(PathBuf::from(std::env::var("WASM_DIR").unwrap()).join(wasm_name)).unwrap();
+    let c = e.sb.dev_deploy(&wasm).await.unwrap();
+    let r = c.call("new").args_json(json!({"dsmack": e.contract.id()})).transact().await.unwrap();
+    assert!(r.is_success(), "{:?}", r.failures());
+    c
+}
+
+async fn consumer_check(user: &Account, consumer: &Contract, args: &Value) -> bool {
+    let r = user
+        .call(consumer.id(), "check")
+        .args_json(args.clone())
+        .deposit(NearToken::from_millinear(100))
+        .gas(Gas::from_tgas(300))
+        .transact()
+        .await
+        .unwrap();
+    println!("consumer check         {:7.1} Tgas", r.total_gas_burnt.as_tgas());
+    r.json::<bool>().unwrap()
+}
+
+/// A consumer contract calls `verify` and reads the result in a callback. The test build
+/// of the consumer takes the fixed context of the Apple fixture as the action.
 #[tokio::test]
 async fn consumer_contracts_call_verify() {
-    let f = load("app-attest/contracts/fixtures/fresh-apple.json");
-    let kid = hx(&f["kid"]);
-    let e = setup(3, false, &hx(&f["aaguid"])).await;
-    set_clock(&e, FRESH_TIME).await;
-    approve_probe_build(&e).await;
-    let id = endorse_apple(&e).await;
-    let enroll = json!({"id": id, "cert": b64(&hx(&f["cert"])), "auth": b64(&hx(&f["auth"])), "client_data": b64(&hx(&f["clientData"]))});
-    call(&e.owner, &e.contract, "enroll", enroll, "").await;
-
-    let wasm = std::fs::read(PathBuf::from(std::env::var("WASM_DIR").unwrap()).join("dsmack_consumer.wasm")).unwrap();
+    let (e, f, kid) = enrolled_mac().await;
     let mut consumers = Vec::new();
     for _ in 0..2 {
-        let c = e.sb.dev_deploy(&wasm).await.unwrap();
-        let r = c.call("new").args_json(json!({"dsmack": e.contract.id()})).transact().await.unwrap();
-        assert!(r.is_success(), "{:?}", r.failures());
-        consumers.push(c);
+        consumers.push(deploy_consumer(&e, "dsmack_consumer_fixture_context.wasm").await);
     }
     let user = e.sb.dev_create_account().await.unwrap();
     let (ctx, p) = proof(&f, "assert", &kid);
-    let args = json!({"context": ctx, "proof": p});
+    let args = json!({"action": ctx, "proof": p});
     let mut results = Vec::new();
     for i in [0, 0, 1] {
-        let r = user
-            .call(consumers[i].id(), "check")
-            .args_json(args.clone())
-            .deposit(NearToken::from_millinear(100))
-            .gas(Gas::from_tgas(300))
-            .transact()
-            .await
-            .unwrap();
-        println!("consumer check         {:7.1} Tgas", r.total_gas_burnt.as_tgas());
-        results.push(r.json::<bool>().unwrap());
+        results.push(consumer_check(&user, &consumers[i], &args).await);
     }
     // The second call by the first consumer is a replay for that consumer, and the
     // promise failure reaches its callback. The second consumer has its own counter.
@@ -242,6 +243,41 @@ async fn consumer_contracts_call_verify() {
     assert_eq!(last.as_str().unwrap(), b64(&kid));
     let ev: Value = e.contract.view("evidence").args_json(json!({"consumer": consumers[0].id(), "kid": b64(&kid)})).await.unwrap().json().unwrap();
     assert_eq!(ev["counter"], 1);
+}
+
+/// Borsh encoding of a string or byte string: a little-endian u32 length, then the bytes.
+fn borsh_bytes(v: &[u8]) -> Vec<u8> {
+    let mut out = (v.len() as u32).to_le_bytes().to_vec();
+    out.extend_from_slice(v);
+    out
+}
+
+/// The example consumer derives the context from its account, the caller and the action.
+/// A proof sent by another account, or for another action, does not verify.
+#[tokio::test]
+async fn consumer_binds_the_context_to_the_receiver() {
+    let (e, f, kid) = enrolled_mac().await;
+    let consumer = deploy_consumer(&e, "dsmack_consumer.wasm").await;
+    let user = e.sb.dev_create_account().await.unwrap();
+    let action = b"pay task 7".to_vec();
+    let mut data = borsh_bytes(consumer.id().as_bytes());
+    data.extend(borsh_bytes(user.id().as_bytes()));
+    data.extend(borsh_bytes(&action));
+    let got: Value = consumer
+        .view("context_of")
+        .args_json(json!({"receiver": user.id(), "action": b64(&action)}))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(got, b64(&sha256(&data)).as_str());
+
+    // The fixture assertion was made over another context, so the derived context fails.
+    let (ctx, p) = proof(&f, "assert", &kid);
+    assert!(!consumer_check(&user, &consumer, &json!({"action": b64(&action), "proof": p})).await);
+    assert!(!consumer_check(&user, &consumer, &json!({"action": ctx, "proof": p})).await);
+    let ev: Value = e.contract.view("evidence").args_json(json!({"consumer": consumer.id(), "kid": b64(&kid)})).await.unwrap().json().unwrap();
+    assert_eq!(ev, Value::Null);
 }
 
 /// A call without a deposit for its storage fails: the caller pays, not the contract.

@@ -10,3 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 near-sdk = { version = "5.30", default-features = false }
+
+[features]
+# Test builds only: the action is the context, so that Apple's fixtures verify.
+fixture-context = []

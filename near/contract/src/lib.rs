@@ -272,9 +272,11 @@ impl Dsmack {
     /// and the counter. Attach a deposit for the first call of a key from an account.
     ///
     /// An assertion is fresh once for each calling account, so the caller must make
-    /// `context` bind the action: derive it on chain from its own account ID and the
-    /// action, and never take it from the user. A `context` that does not commit to the
-    /// caller accepts an assertion that was made for another consumer.
+    /// `context` bind the use: derive it on chain from its own account ID, the account
+    /// that receives the result of the action, and the action. Never take it from the
+    /// user. A `context` that does not commit to the caller accepts an assertion that was
+    /// made for another consumer. A `context` that does not commit to the receiver lets
+    /// another account send a copy of the proof first and receive the result.
     #[payable]
     pub fn verify(&mut self, context: Base64VecU8, proof: Proof) -> Verified {
         let before = env::storage_usage();
