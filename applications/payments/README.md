@@ -97,3 +97,18 @@ deno run -A applications/payments/anvil-e2e.mjs
 
 Set `PAYMENTS_EVIDENCE` for the Go receipt tests and Deno tests to the same local
 directory to check Go/Ethers receipt interoperability.
+
+A wallet can bound a guest stay by signing `maxSpendNanoUsd` and a UUID
+`operationId` in `/agent/open`. The positive decimal nano-USD cap includes the
+session's actual guest rate, browse surcharge and 60-second minimum. The broker
+rejects a cap below that minimum before granting capacity and limits each active
+time reservation to the remaining whole-second budget. Independent inference
+purchases use their own ledger reservations. Omitting both fields keeps the
+existing uncapped session interface.
+
+The broker persists the operation with the session. Retrying the same operation
+and identical conversation, peer, node, browse request and cap returns that
+session, including after it has closed. Changed constraints return
+`OPERATION_CONFLICT`. An expired signed request needs a fresh wallet signature;
+the operation UUID stays the same. A new client peer requires a new operation
+and cannot take over the original grant.
