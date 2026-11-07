@@ -55,6 +55,16 @@ class DrainTest(unittest.TestCase):
             with drained('unused', 'relay-broker', 'x', call=call):
                 raise ValueError('upload rejected')
 
+    def test_refused_drain_does_not_resume(self):
+        calls = []
+        def call(path, method='GET', headers={}):
+            calls.append(method)
+            raise HTTPError('https://broker/drain', 403, 'operator required', {}, None)
+        with self.assertRaises(HTTPError):
+            with drained('unused', 'relay-broker', 'x', call=call):
+                self.fail('deploy must not run')
+        self.assertEqual(calls, ['POST'])
+
     def test_drain_post_timeout_still_resumes(self):
         calls = []
         def call(path, method='GET', headers={}):
