@@ -392,6 +392,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsmack-consumer"
+version = "0.1.0"
+dependencies = [
+ "near-sdk",
+]
+
+[[package]]
 name = "dsmack-near"
 version = "0.1.0"
 dependencies = [

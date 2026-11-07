@@ -162,6 +162,51 @@ async fn enrollment_needs_an_admitted_build() {
     call(&e.owner, &e.contract, "enroll", enroll, "build not admitted").await;
 }
 
+/// A consumer contract calls `verify` and reads the key ID in a callback.
+#[tokio::test]
+async fn consumer_contracts_call_verify() {
+    let f = load("app-attest/contracts/fixtures/fresh-apple.json");
+    let kid = hx(&f["kid"]);
+    let e = setup(3, false, &hx(&f["aaguid"])).await;
+    set_clock(&e, FRESH_TIME).await;
+    approve_probe_build(&e).await;
+    let id = endorse_apple(&e).await;
+    let enroll = json!({"id": id, "cert": b64(&hx(&f["cert"])), "auth": b64(&hx(&f["auth"])), "client_data": b64(&hx(&f["clientData"]))});
+    call(&e.owner, &e.contract, "enroll", enroll, "").await;
+
+    let wasm = std::fs::read(PathBuf::from(std::env::var("WASM_DIR").unwrap()).join("dsmack_consumer.wasm")).unwrap();
+    let mut consumers = Vec::new();
+    for _ in 0..2 {
+        let c = e.sb.dev_deploy(&wasm).await.unwrap();
+        let r = c.call("new").args_json(json!({"dsmack": e.contract.id()})).transact().await.unwrap();
+        assert!(r.is_success(), "{:?}", r.failures());
+        consumers.push(c);
+    }
+    let user = e.sb.dev_create_account().await.unwrap();
+    let (ctx, p) = proof(&f, "assert", &kid);
+    let args = json!({"context": ctx, "proof": p});
+    let mut results = Vec::new();
+    for i in [0, 0, 1] {
+        let r = user
+            .call(consumers[i].id(), "check")
+            .args_json(args.clone())
+            .deposit(NearToken::from_millinear(100))
+            .gas(Gas::from_tgas(300))
+            .transact()
+            .await
+            .unwrap();
+        println!("consumer check         {:7.1} Tgas", r.total_gas_burnt.as_tgas());
+        results.push(r.json::<bool>().unwrap());
+    }
+    // The second call by the first consumer is a replay for that consumer, and the
+    // promise failure reaches its callback. The second consumer has its own counter.
+    assert_eq!(results, [true, false, true]);
+    let last: Value = consumers[0].view("last_kid").await.unwrap().json().unwrap();
+    assert_eq!(last.as_str().unwrap(), b64(&kid));
+    let ev: Value = e.contract.view("evidence").args_json(json!({"consumer": consumers[0].id(), "kid": b64(&kid)})).await.unwrap().json().unwrap();
+    assert_eq!(ev["counter"], 1);
+}
+
 /// A call without a deposit for its storage fails: the caller pays, not the contract.
 #[tokio::test]
 async fn storage_is_paid_by_the_caller() {

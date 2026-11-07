@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the contract WASM in a Rust container: out/dsmack_near.wasm for deployment
-# and out/dsmack_near_fixture_clock.wasm for the sandbox tests.
+# and out/dsmack_near_fixture_clock.wasm and out/dsmack_consumer.wasm for the sandbox tests.
 # Usage: ./build.sh
 set -euo pipefail
 root=$(cd "$(dirname "$0")" && pwd)
@@ -16,6 +16,8 @@ exec podman run --rm -v "$root:/work:Z" -v "$cache:/cargo:Z" \
     cp "$wasm" out/dsmack_near.wasm
     cargo build -p dsmack-near --target wasm32-unknown-unknown --release --locked --features fixture-clock
     cp "$wasm" out/dsmack_near_fixture_clock.wasm
+    cargo build -p dsmack-consumer --target wasm32-unknown-unknown --release --locked
+    cp /cargo/target/wasm32-unknown-unknown/release/dsmack_consumer.wasm out/dsmack_consumer.wasm
     if grep -q set_clock out/dsmack_near.wasm; then echo "the deployment build exports set_clock" >&2; exit 1; fi
     ls -l out
     sha256sum out/dsmack_near.wasm'

@@ -1,0 +1,12 @@
+[package]
+name = "dsmack-consumer"
+version = "0.1.0"
+edition = "2021"
+description = "Example contract that asks dsmack-near to verify an assertion"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk = { version = "5.30", default-features = false }

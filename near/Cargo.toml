@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "contract"]
+members = ["core", "contract", "examples/consumer"]
 exclude = ["tests"]
 
 [profile.release]
