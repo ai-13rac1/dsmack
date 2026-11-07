@@ -2,6 +2,7 @@
 import json
 import time
 from contextlib import contextmanager
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -21,6 +22,12 @@ def drained(base, project, operator_token, minutes=65, *, call=None, clock=time.
         # Inside the try: a timed-out POST may still have drained the broker.
         if call('/drain', 'POST', auth) != {'draining': True}:
             raise RuntimeError("Broker did not confirm draining")
+    except HTTPError:
+        raise  # The broker answered and refused: nothing was drained.
+    except BaseException as error:
+        resume(call, project, auth, error)
+        raise
+    try:
         # A stay lasts at most an hour; a Mac still reporting busy after that is stuck.
         deadline = clock() + minutes * 60
         while True:
@@ -37,12 +44,16 @@ def drained(base, project, operator_token, minutes=65, *, call=None, clock=time.
             sleep(5)
         yield
     except BaseException as error:
-        print(f"Drain: deploy failed ({type(error).__name__}: {error}); resuming new stays", flush=True)
-        try:
-            resumed = call('/drain', 'DELETE', auth)
-        except Exception as undo:
-            raise RuntimeError(f"Deploy failed and DELETE /{project}/drain failed ({type(undo).__name__}); "
-                               "the broker may still refuse new stays") from error
-        if resumed != {'draining': False}:
-            raise RuntimeError(f"Deploy failed and the broker did not confirm resuming: {resumed}") from error
+        resume(call, project, auth, error)
         raise
+
+
+def resume(call, project, auth, error):
+    print(f"Drain: deploy failed ({type(error).__name__}: {error}); resuming new stays", flush=True)
+    try:
+        resumed = call('/drain', 'DELETE', auth)
+    except Exception as undo:
+        raise RuntimeError(f"Deploy failed and DELETE /{project}/drain failed ({type(undo).__name__}); "
+                           "the broker may still refuse new stays") from error
+    if resumed != {'draining': False}:
+        raise RuntimeError(f"Deploy failed and the broker did not confirm resuming: {resumed}") from error
