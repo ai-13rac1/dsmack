@@ -29,8 +29,8 @@ verify the app behind a signed message.
   model. Live on Base Sepolia testnet at
   [pod.dstack.soc1024.com/private-agent](https://pod.dstack.soc1024.com/private-agent/).
 
-The repository includes verifiers written in Solidity, a zero-knowledge proof
-implementation, and DsmackRunner—a signed macOS app that runs workloads inside a
+The repository includes verifiers written in Solidity and for NEAR, a zero-knowledge
+proof implementation, and DsmackRunner—a signed macOS app that runs workloads inside a
 Linux VM. The bounty application uses that runtime to check submitted code.
 Arcade's Board-search task is its first example.
 
