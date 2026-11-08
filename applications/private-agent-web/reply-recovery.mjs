@@ -11,7 +11,7 @@ export function referenceError(error, ref) {
 // a completed answer. This object is saved with the native Pi assistant message.
 export function replyFailure(error, { partial = false, online = globalThis.navigator?.onLine } = {}) {
   const original = error?.message || String(error);
-  const code = error?.code || original.match(/^([A-Z_]+):/)?.[1];
+  const code = error?.code || original.match(/^([A-Z0-9_]+):/)?.[1];
   const detail = [original,
     code && !original.includes(code) ? code : "",
     error?.status ? `HTTP ${error.status}` : "",
@@ -22,6 +22,18 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   if (/request.*abort|operation.*abort/i.test(original)) {
     category = "cancelled";
     message = "Reply cancelled. Send a message or Retry.";
+  } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
+    category = "provider";
+    const upstream = /^PROVIDER_HTTP_(\d{3})(?:_([A-Z0-9_]+))?$/.exec(code || "");
+    const reasons = { 401: "authentication failed", 403: "access denied", 402: "insufficient credit", 429: "rate limited" };
+    const reason = upstream?.[2]?.toLowerCase().replaceAll("_", " ") || reasons[upstream?.[1]];
+    message = upstream
+      ? `NEAR AI returned ${upstream[1]}${reason ? ` (${reason})` : ""}.`
+      : code === "PROVIDER_TIMEOUT" ? "NEAR AI timed out. Retry."
+      : code === "PROVIDER_ABORTED" ? "NEAR AI request was aborted. Retry."
+      : code === "NEAR_ATTESTATION_TRANSPORT" ? "Couldn't reach NEAR AI over the attested connection. Retry."
+      : "NEAR AI couldn't finish this reply. Wait a moment, then Retry.";
+    if (upstream && ["401", "402", "403"].includes(upstream[1])) retryable = false;
   } else if (code === "STARTER_BUDGET_EXHAUSTED") {
     category = "credit";
     message = "Today's free credit is used up. Try again after 00:00 UTC.";
@@ -58,9 +70,6 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   } else if (/\[api\.invalid_input\]|invalid_json/.test(original)) {
     category = "provider";
     message = "The model couldn't read this request. Retry, or reload the page.";
-  } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
-    category = "provider";
-    message = "NEAR AI couldn't finish this reply. Wait a moment, then Retry.";
   } else if (error?.status) {
     category = "broker";
     message = error.status === 403

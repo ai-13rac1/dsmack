@@ -8,6 +8,39 @@ export class NearError extends Error {
     this.status = status;
   }
 }
+// Only structured, bounded identifiers may cross the provider boundary. Never
+// include upstream messages, request content, credentials or response bodies.
+async function upstreamError(response, observed = () => {}) {
+  let shortCode = "";
+  try {
+    const reader = response.body?.getReader();
+    if (reader) {
+      const chunks = []; let size = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          observed(size);
+          if (size > 8192) break;
+          chunks.push(value);
+        }
+        if (size <= 8192) {
+          const bytes = new Uint8Array(size); let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+          const body = JSON.parse(new TextDecoder().decode(bytes));
+          const code = body?.error?.code ?? body?.code;
+          if (typeof code === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,31}$/.test(code)) shortCode = "_" + code.toUpperCase();
+        }
+      } finally { await reader.cancel(); reader.releaseLock(); }
+    }
+  } catch { /* A malformed error body must not hide its HTTP status. */ }
+  return new NearError(`PROVIDER_HTTP_${response.status}${shortCode}`, response.status === 429 ? 429 : 502);
+}
+function transportError(error, signal, fallback = "PROVIDER_TRANSPORT") {
+  return new NearError(signal?.aborted || error?.name === "AbortError" ? "PROVIDER_ABORTED"
+    : error?.name === "TimeoutError" ? "PROVIDER_TIMEOUT" : fallback);
+}
 const need = (ok, code = "USAGE_MISMATCH") => {
   if (!ok) throw new NearError(code);
 };
@@ -58,19 +91,11 @@ export class NearProvider {
           : AbortSignal.timeout(30000),
         redirect: "error",
       });
-    } catch {
-      throw new NearError("PROVIDER_UNAVAILABLE");
+    } catch (error) {
+      throw transportError(error, signal);
     }
     if (!r.ok) {
-      await r.body?.cancel();
-      throw new NearError(
-        r.status === 401 || r.status === 403
-          ? "PROVIDER_AUTH"
-          : r.status === 429
-          ? "PROVIDER_RATE_LIMIT"
-          : "PROVIDER_UNAVAILABLE",
-        r.status === 429 ? 429 : 502,
-      );
+      throw await upstreamError(r);
     }
     return r;
   }
@@ -180,19 +205,15 @@ export class NearProvider {
           body: payload,
         },
       );
-    } catch {
-      complete("ATTESTATION_INVALID");
-      throw new NearError("ATTESTATION_INVALID");
+    } catch (cause) {
+      const error = transportError(cause, signal, "NEAR_ATTESTATION_TRANSPORT");
+      complete(error.code);
+      throw error;
     }
     if (!response.ok) {
-      try { responseBytes = (await response.arrayBuffer()).byteLength; }
-      finally { complete(response.status === 429 ? "PROVIDER_RATE_LIMIT" : "PROVIDER_UNAVAILABLE"); }
-      throw new NearError(
-        response.status === 429
-          ? "PROVIDER_RATE_LIMIT"
-          : "PROVIDER_UNAVAILABLE",
-        response.status === 429 ? 429 : 502,
-      );
+      const error = await upstreamError(response, size => { responseBytes = size; });
+      complete(error.code);
+      throw error;
     }
     if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) {
       try { await response.body?.cancel(); }
@@ -208,7 +229,7 @@ export class NearProvider {
           if (cancelled) return;
           if (done) { complete("OK"); reader.releaseLock(); controller.close(); }
           else { responseBytes += value.byteLength; controller.enqueue(value); }
-        } catch (error) { if (!cancelled) { complete("PROVIDER_UNAVAILABLE"); reader.releaseLock(); controller.error(error); } }
+        } catch (error) { if (!cancelled) { const failure = transportError(error, signal); complete(failure.code); reader.releaseLock(); controller.error(failure); } }
       },
       async cancel(reason) {
         cancelled = true;
