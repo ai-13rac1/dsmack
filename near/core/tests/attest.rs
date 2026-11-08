@@ -44,12 +44,13 @@ fn real_apple_enrollment() {
 fn fresh_hardware_assertions_and_modified_code() {
     let (f, m, _) = fresh();
     let (auth, ctx, r, s) = f.assertion("assert");
-    assert_eq!(m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap(), f.kid);
+    let a = m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap();
+    assert_eq!((a.counter, a.cdhash, a.rp), (1, f.cdhash, f.app_hash));
     assert_eq!(err(m.verify(&f.kid, &auth, &ctx, &r, &s)), "assertion replay");
     let (auth, ctx, r, s) = f.assertion("modified");
     assert_eq!(err(m.verify(&f.kid, &auth, &ctx, &r, &s)), "current CDHash");
     let (auth, ctx, r, s) = f.assertion("restored");
-    assert_eq!(m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap(), f.kid);
+    assert_eq!(m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap().counter, 3);
     assert_eq!(m.counter(&f.kid), 3);
 }
 
@@ -109,7 +110,8 @@ fn iphone_enrollment_and_assertions() {
     let (f, m, id) = iphone();
     assert_eq!(m.enroll(&id, &f.cert, &f.auth, &f.client_data).unwrap(), f.kid);
     let (auth, ctx, r, s) = f.assertion("assert");
-    assert_eq!(m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap(), f.kid);
+    let a = m.verify(&f.kid, &auth, &ctx, &r, &s).unwrap();
+    assert_eq!((a.counter, a.cdhash, a.rp), (1, f.cdhash, f.app_hash));
     let (auth, ctx, r, s) = f.assertion("modified");
     assert_eq!(err(m.verify(&f.kid, &auth, &ctx, &r, &s)), "current CDHash");
     assert_eq!(m.counter(&f.kid), 1);

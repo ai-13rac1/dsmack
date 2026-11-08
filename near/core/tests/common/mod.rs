@@ -177,11 +177,11 @@ impl Model {
         Ok(e.kid)
     }
 
-    pub fn verify(&self, kid: &[u8; 32], auth: &[u8], context: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> Result<[u8; 32]> {
+    pub fn verify(&self, kid: &[u8; 32], auth: &[u8], context: &[u8; 32], r: &[u8; 32], s: &[u8; 32]) -> Result<Asserted> {
         let key = self.keys.borrow().get(kid).cloned();
         let a: Asserted = attest::verify(&Native, &self.platform, &View(self), key.as_ref(), auth, context, r, s, self.now)?;
         self.keys.borrow_mut().get_mut(kid).unwrap().counter = a.counter;
-        Ok(*kid)
+        Ok(a)
     }
 
     pub fn counter(&self, kid: &[u8; 32]) -> u32 {

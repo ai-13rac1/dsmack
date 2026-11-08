@@ -199,7 +199,7 @@ fn after_2030_enrollment_and_assertion() {
     let fresh = Fixture::load("fresh-apple.json");
     assert_eq!(r.enroll(&id, &read("rotation/leaf5.der"), &fresh.auth, &fresh.client_data).unwrap(), fresh.kid);
     let (auth, ctx, rr, s) = fresh.assertion("assert");
-    assert_eq!(r.verify(&fresh.kid, &auth, &ctx, &rr, &s).unwrap(), fresh.kid);
+    assert_eq!(r.verify(&fresh.kid, &auth, &ctx, &rr, &s).unwrap().cdhash, fresh.cdhash);
     r.now = 2_373_148_801;
     assert_eq!(err(r.verify(&fresh.kid, &auth, &[0; 32], &rr, &s)), "key validity");
 }

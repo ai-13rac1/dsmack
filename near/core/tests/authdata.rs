@@ -71,7 +71,7 @@ fn size_flags_and_category_are_checked() {
     let check = |auth: &[u8], category| authdata::check(&Native, auth, &f.aaguid, true, &x, &y, category);
     assert_eq!(err(check(&f.auth[..36], 3)), "auth size");
     let mut a = f.auth.clone();
-    a[32] &= !0x80; // user verification flag cleared
+    a[32] &= !0x80; // extension data flag cleared
     assert_eq!(err(check(&a, 3)), "auth flags");
     assert_eq!(err(check(&f.auth, 4)), "validation category");
     let mut a = f.auth.clone();

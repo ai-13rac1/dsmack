@@ -345,7 +345,7 @@ async fn production_build_reads_the_block_time() {
     let f = load("app-attest/contracts/fixtures/fresh-apple.json");
     let e = setup_with("dsmack_near.wasm", 3, false, &hx(&f["aaguid"])).await;
     let r = e.contract.call("set_clock").args_json(json!({"secs": FRESH_TIME})).transact().await.unwrap();
-    assert!(r.is_failure());
+    assert!(format!("{:?}", r.failures()).contains("MethodNotFound"), "{:?}", r.failures());
     let id = endorse_apple(&e).await;
     approve_probe_build(&e).await;
     let enroll = json!({"id": id, "cert": b64(&hx(&f["cert"])), "auth": b64(&hx(&f["auth"])), "client_data": b64(&hx(&f["clientData"]))});
@@ -505,6 +505,31 @@ async fn calls_log_the_solidity_events() {
     let (ctx, p) = proof(&f, "assert", &kid);
     let got = event(&e.owner, &e.contract, "verify", json!({"context": ctx, "proof": p})).await;
     assert_eq!(got, json!({"event": "Asserted", "data": {"consumer": e.owner.id(), "kid": b64(&kid), "counter": 1, "context": ctx}}));
+}
+
+/// An account other than the owner can endorse, register and enroll, as the README says.
+/// Only the contract account can call `new` and `set_clock`.
+#[tokio::test]
+async fn callers_of_each_method() {
+    let f = load("app-attest/contracts/fixtures/fresh-apple.json");
+    let e = setup(3, false, &hx(&f["aaguid"])).await;
+    let other = e.sb.dev_create_account().await.unwrap();
+    let r = other.call(e.contract.id(), "set_clock").args_json(json!({"secs": FRESH_TIME})).transact().await.unwrap();
+    assert!(format!("{:?}", r.failures()).contains("contract account only"), "{:?}", r.failures());
+    set_clock(&e, FRESH_TIME).await;
+    let probe = "contracts/fixtures/cd-args-probe-macos.json";
+    call(&e.owner, &e.contract, "set_build", build_args(probe), "").await;
+    call(&other, &e.contract, "register_build", build_args(probe), "").await;
+    let der = std::fs::read(dsmack("app-attest/contracts/fixtures/apple-intermediate.der")).unwrap();
+    let id = call(&other, &e.contract, "endorse_intermediate", json!({"der": b64(&der)}), "").await.unwrap();
+    let kid = call(&other, &e.contract, "enroll", enroll_args(&f, id.as_str().unwrap()), "").await.unwrap();
+    assert_eq!(kid, b64(&hx(&f["kid"])).as_str());
+
+    let wasm = std::fs::read(PathBuf::from(std::env::var("WASM_DIR").unwrap()).join("dsmack_near.wasm")).unwrap();
+    let c = e.sb.dev_deploy(&wasm).await.unwrap();
+    let args = json!({"owner": other.id(), "aaguid": b64(&hx(&f["aaguid"])), "category": 3, "ios": false});
+    let r = other.call(c.id(), "new").args_json(args).transact().await.unwrap();
+    assert!(format!("{:?}", r.failures()).contains("Method new is private"), "{:?}", r.failures());
 }
 
 /// Every fixed-length argument of a call or a view rejects a value of the wrong length.
