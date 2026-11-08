@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleRequest } from "./server.ts";
 import { InferenceError } from "./inference.mjs";
-import { NearProvider } from "./near.mjs";
+import { NearError, NearProvider } from "./near.mjs";
 
 async function capture(operation) {
   const original = console.error, lines = [];
@@ -61,7 +61,7 @@ test("NEAR success and refusal log byte counts and upstream status without respo
     assert.equal(lines[0].http_status,200);
     assert.equal(lines[0].request_bytes,bytes(JSON.stringify({prompt:"body-private-marker 中文"})));
     assert.equal(lines[0].response_bytes,bytes(payload));
-    await assert.rejects(chat(provider,()=>new Response(refusal,{status:429})),error=>error.code==="PROVIDER_RATE_LIMIT");
+    await assert.rejects(chat(provider,()=>new Response(refusal,{status:429})),error=>error.code==="PROVIDER_HTTP_429");
     assert.equal(lines.length,2);
     assert.equal(lines[1].http_status,429);
     assert.equal(lines[1].response_bytes,bytes(refusal));
@@ -74,7 +74,7 @@ test("NEAR success and refusal log byte counts and upstream status without respo
 test("NEAR transport failure and stream cancellation each log exactly once", async () => {
   await capture(async lines => {
     const provider = new NearProvider();
-    await assert.rejects(chat(provider,()=>{throw Error("secret-key-private-marker");}),error=>error.code==="ATTESTATION_INVALID");
+    await assert.rejects(chat(provider,()=>{throw Error("secret-key-private-marker");}),error=>error.code==="NEAR_ATTESTATION_TRANSPORT");
     assert.equal(lines.length,1);
     assert.equal(lines[0].http_status,null);
     const response=await chat(provider,()=>new Response(new ReadableStream({pull(c){c.enqueue(new Uint8Array([1,2,3]));}}),{headers:{"content-type":"text/event-stream"}}));
@@ -92,10 +92,23 @@ test("an interrupted NEAR stream logs the bytes read before the failure once", a
       if(sent)throw Error("response-private-marker");
       sent=true;c.enqueue(new Uint8Array([1,2,3]));
     }}),{headers:{"content-type":"text/event-stream"}}));
-    await assert.rejects(response.arrayBuffer(),/response-private-marker/);
+    await assert.rejects(response.arrayBuffer(), error => error.code === "PROVIDER_TRANSPORT");
     assert.equal(lines.length,1);
-    assert.equal(lines[0].code,"PROVIDER_UNAVAILABLE");
+    assert.equal(lines[0].code,"PROVIDER_TRANSPORT");
     assert.equal(lines[0].response_bytes,3);
     assert(!JSON.stringify(lines).includes("private-marker"));
+  });
+});
+
+
+test("the broker sends NEAR HTTP diagnostics to the client and its request log", async () => {
+  await capture(async lines => {
+    const broker = { cfg: {}, inference: { prepare() { throw new NearError("PROVIDER_HTTP_402_INSUFFICIENT_CREDIT"); } } };
+    const response = await handleRequest(new Request("https://broker.example/inference/prepare", {
+      method: "POST", body: JSON.stringify({ nonce }),
+    }), broker);
+    assert.equal(response.status, 502);
+    assert.equal((await response.json()).error.code, "PROVIDER_HTTP_402_INSUFFICIENT_CREDIT");
+    assert.equal(lines[0].code, "PROVIDER_HTTP_402_INSUFFICIENT_CREDIT");
   });
 });

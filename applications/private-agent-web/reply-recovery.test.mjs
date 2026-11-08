@@ -120,3 +120,24 @@ test('guest closure and busy capacity cannot be confused with a broker restart o
   assert.equal(browser.category, 'browser');
   assert.doesNotMatch(browser.message, /broker.*restarting/i);
 });
+
+test('NEAR HTTP status and structured cause reach the retry message', () => {
+  for (const [code, text, retryable] of [
+    ['PROVIDER_HTTP_402_INSUFFICIENT_CREDIT', 'NEAR AI returned 402 (insufficient credit).', false],
+    ['PROVIDER_HTTP_401', 'NEAR AI returned 401 (authentication failed).', false],
+    ['PROVIDER_HTTP_429_RATE_LIMIT', 'NEAR AI returned 429 (rate limit).', true],
+    ['PROVIDER_HTTP_503', 'NEAR AI returned 503.', true],
+  ]) {
+    const result = replyFailure(Error(`${code}: refused`));
+    assert.equal(result.category, 'provider');
+    assert.equal(result.message, text);
+    assert.equal(result.retryable, retryable);
+  }
+});
+
+
+test('attested transport failures remain distinct from rejected attestation evidence', () => {
+  const failure = replyFailure(Object.assign(Error('NEAR_ATTESTATION_TRANSPORT'), { code: 'NEAR_ATTESTATION_TRANSPORT' }));
+  assert.equal(failure.category, 'provider');
+  assert.match(failure.message, /attested connection/);
+});
