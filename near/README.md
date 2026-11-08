@@ -44,6 +44,11 @@ the rest. Views: `key`, `evidence`, `intermediate`, `rp_id_hash`, `team_id_hash`
 two resolve a CDHash under any build that `set_build` ever approved, for a consumer that
 pins one build.
 
+`endorse_intermediate`, `enroll` and `verify` log a NEP-297 event (standard `dsmack`) with
+the fields of the Solidity events: `IntermediateEndorsed` (`id`, `not_before`,
+`not_after`), `Enrolled` (`kid`, `expires`) and `Asserted` (`consumer`, `kid`, `counter`,
+`context`).
+
 Every failed check of the certificate, authenticator data, assertion and build code
 panics with the message of the Solidity `require` that it replaces. A call argument of
 the wrong length panics with `<name> must be <n> bytes`.

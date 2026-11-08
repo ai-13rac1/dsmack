@@ -477,6 +477,36 @@ async fn registry_keeps_teams_apart() {
     }
 }
 
+/// The data of the one NEP-297 event that a successful call logs.
+async fn event(from: &Account, c: &Contract, method: &str, args: Value) -> Value {
+    let r = from.call(c.id(), method).args_json(args).deposit(NearToken::from_millinear(100)).gas(Gas::from_tgas(300)).transact().await.unwrap();
+    assert!(r.is_success(), "{method}: {:?}", r.failures());
+    let logs = r.logs();
+    assert_eq!(logs.len(), 1, "{method}: {logs:?}");
+    let e: Value = serde_json::from_str(logs[0].strip_prefix("EVENT_JSON:").unwrap()).unwrap();
+    assert_eq!((&e["standard"], &e["version"]), (&json!("dsmack"), &json!("1.0.0")));
+    json!({"event": e["event"], "data": e["data"][0]})
+}
+
+/// Endorsement, enrollment and assertion log the events of the Solidity contracts.
+#[tokio::test]
+async fn calls_log_the_solidity_events() {
+    let f = load("app-attest/contracts/fixtures/fresh-apple.json");
+    let kid = hx(&f["kid"]);
+    let e = setup(3, false, &hx(&f["aaguid"])).await;
+    set_clock(&e, FRESH_TIME).await;
+    approve_probe_build(&e).await;
+    let der = std::fs::read(dsmack("app-attest/contracts/fixtures/apple-intermediate.der")).unwrap();
+    let got = event(&e.owner, &e.contract, "endorse_intermediate", json!({"der": b64(&der)})).await;
+    let id = got["data"]["id"].as_str().unwrap().to_string();
+    assert_eq!(got, json!({"event": "IntermediateEndorsed", "data": {"id": id, "not_before": 1_584_556_795u64, "not_after": 1_899_590_400u64}}));
+    let got = event(&e.owner, &e.contract, "enroll", enroll_args(&f, &id)).await;
+    assert_eq!(got, json!({"event": "Enrolled", "data": {"kid": b64(&kid), "expires": 1_899_590_400u64}}));
+    let (ctx, p) = proof(&f, "assert", &kid);
+    let got = event(&e.owner, &e.contract, "verify", json!({"context": ctx, "proof": p})).await;
+    assert_eq!(got, json!({"event": "Asserted", "data": {"consumer": e.owner.id(), "kid": b64(&kid), "counter": 1, "context": ctx}}));
+}
+
 /// Every fixed-length argument of a call or a view rejects a value of the wrong length.
 #[tokio::test]
 async fn arguments_of_the_wrong_length_fail() {

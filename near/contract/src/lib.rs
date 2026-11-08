@@ -149,8 +149,18 @@ fn settle(storage_before: u64) {
         env::panic_str(&format!("attach {cost} yoctoNEAR for storage"));
     }
     if deposit > cost {
-        let _ = Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(deposit - cost));
+        Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(deposit - cost)).detach();
     }
+}
+
+/// Log a NEP-297 event with the fields of the Solidity event of the same name.
+fn event(name: &str, data: near_sdk::serde_json::Value) {
+    let log = near_sdk::serde_json::json!({"standard": "dsmack", "version": "1.0.0", "event": name, "data": [data]});
+    env::log_str(&format!("EVENT_JSON:{log}"));
+}
+
+fn b64(v: &[u8]) -> Base64VecU8 {
+    Base64VecU8(v.to_vec())
 }
 
 /// Registry policy: a CDHash is admitted when the current build resolves it to
@@ -224,6 +234,8 @@ impl Dsmack {
         );
         self.intermediates.flush();
         settle(before);
+        let data = near_sdk::serde_json::json!({"id": b64(&id), "not_before": ca.not_before, "not_after": ca.not_after});
+        event("IntermediateEndorsed", data);
         Base64VecU8(id.to_vec())
     }
 
@@ -263,6 +275,7 @@ impl Dsmack {
         self.keys.insert(e.kid, StoredKey { x: e.key.x, y: e.key.y, expires: e.key.expires });
         self.keys.flush();
         settle(before);
+        event("Enrolled", near_sdk::serde_json::json!({"kid": b64(&e.kid), "expires": e.key.expires}));
         Base64VecU8(e.kid.to_vec())
     }
 
@@ -283,7 +296,7 @@ impl Dsmack {
         let kid: B32 = fixed(&proof.kid, "kid");
         let context: B32 = fixed(&context, "context");
         let caller = env::predecessor_account_id();
-        let slot = (caller, kid);
+        let slot = (caller.clone(), kid);
         let counter = self.evidence.get(&slot).map_or(0, |e| e.counter);
         let key = self.keys.get(&kid).map(|k| Key { x: k.x, y: k.y, expires: k.expires, counter });
         let a = check(attest::verify(
@@ -303,6 +316,8 @@ impl Dsmack {
         );
         self.evidence.flush();
         settle(before);
+        let data = near_sdk::serde_json::json!({"consumer": caller, "kid": b64(&kid), "counter": a.counter, "context": b64(&context)});
+        event("Asserted", data);
         Verified {
             kid: Base64VecU8(kid.to_vec()),
             cdhash: Base64VecU8(a.cdhash.to_vec()),

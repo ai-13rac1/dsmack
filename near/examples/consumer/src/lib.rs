@@ -95,7 +95,7 @@ impl Consumer {
                 true
             }
             Err(_) => {
-                let _ = Promise::new(user).transfer(deposit);
+                Promise::new(user).transfer(deposit).detach();
                 false
             }
         }
