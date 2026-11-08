@@ -74,10 +74,11 @@ You need Podman.
 near/build.sh
 ```
 
-This writes `near/out/dsmack_near.wasm`, which you deploy, and for the sandbox tests
-`dsmack_near_fixture_clock.wasm`, the example consumer `dsmack_consumer.wasm` and its test
-build `dsmack_consumer_fixture_context.wasm`, which takes a fixture's context as the action. [DEPLOY.md](DEPLOY.md) explains how to
-deploy and set up the contract.
+This writes `near/out/dsmack_near.wasm`, which you deploy, and the example consumer
+`near/out/dsmack_consumer.wasm`. The sandbox tests also use the test builds in
+`near/out/test/`: `dsmack_near_fixture_clock.wasm` reads the clock from storage, and
+`dsmack_consumer_fixture_context.wasm` takes a fixture's context as the action.
+[DEPLOY.md](DEPLOY.md) explains how to deploy and set up the contract.
 
 ## Test
 

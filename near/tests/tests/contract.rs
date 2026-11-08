@@ -69,7 +69,7 @@ async fn call_deposit(from: &Account, c: &Contract, method: &str, args: Value, d
 }
 
 async fn setup(platform_category: u32, ios: bool, aaguid: &[u8]) -> Env {
-    setup_with("dsmack_near_fixture_clock.wasm", platform_category, ios, aaguid).await
+    setup_with("test/dsmack_near_fixture_clock.wasm", platform_category, ios, aaguid).await
 }
 
 async fn setup_with(wasm_name: &str, platform_category: u32, ios: bool, aaguid: &[u8]) -> Env {
@@ -227,7 +227,7 @@ async fn consumer_contracts_call_verify() {
     let (e, f, kid) = enrolled_mac().await;
     let mut consumers = Vec::new();
     for _ in 0..2 {
-        consumers.push(deploy_consumer(&e, "dsmack_consumer_fixture_context.wasm").await);
+        consumers.push(deploy_consumer(&e, "test/dsmack_consumer_fixture_context.wasm").await);
     }
     let user = e.sb.dev_create_account().await.unwrap();
     let (ctx, p) = proof(&f, "assert", &kid);

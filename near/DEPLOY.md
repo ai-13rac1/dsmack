@@ -10,8 +10,8 @@ code on the account:
 sha256sum out/dsmack_near.wasm
 ```
 
-Deploy `out/dsmack_near.wasm`, not the `fixture-clock` build. The `fixture-clock` build has
-a `set_clock` method that the contract account can call. A holder of a key of the contract
+Deploy `out/dsmack_near.wasm`, not a test build from `out/test/`. The `fixture-clock` build
+has a `set_clock` method that the contract account can call. A holder of a key of the contract
 account can then move the clock back, and expired certificates pass the checks again.
 
 ## Set up
