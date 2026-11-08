@@ -22,6 +22,18 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   if (/request.*abort|operation.*abort/i.test(original)) {
     category = "cancelled";
     message = "Reply cancelled. Send a message or Retry.";
+  } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
+    category = "provider";
+    const upstream = /^PROVIDER_HTTP_(\d{3})(?:_([A-Z0-9_]+))?$/.exec(code || "");
+    const reasons = { 401: "authentication failed", 403: "access denied", 402: "insufficient credit", 429: "rate limited" };
+    const reason = upstream?.[2]?.toLowerCase().replaceAll("_", " ") || reasons[upstream?.[1]];
+    message = upstream
+      ? `NEAR AI returned ${upstream[1]}${reason ? ` (${reason})` : ""}.`
+      : code === "PROVIDER_TIMEOUT" ? "NEAR AI timed out. Retry."
+      : code === "PROVIDER_ABORTED" ? "NEAR AI request was aborted. Retry."
+      : code === "NEAR_ATTESTATION_TRANSPORT" ? "Couldn't reach NEAR AI over the attested connection. Retry."
+      : "NEAR AI couldn't finish this reply. Wait a moment, then Retry.";
+    if (upstream && ["401", "402", "403"].includes(upstream[1])) retryable = false;
   } else if (code === "STARTER_BUDGET_EXHAUSTED") {
     category = "credit";
     message = "Today's free credit is used up. Try again after 00:00 UTC.";
@@ -47,7 +59,7 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
     category = "credit";
     message = "Couldn't use your credit. Check your wallet and available credit before trying again.";
     retryable = false;
-  } else if (!/^NEAR_/.test(code || "") && /attest|verif|quote|(?:broker|signing|encryption) key|code hash|deployment pin|challenge mismatch|escrow code|measured|\bTDX\b|\bNRAS\b|\bMR(?:TD|SEAM|CONFIGID)\b/i.test(original)) {
+  } else if (/attest|verif|quote|(?:broker|signing|encryption) key|code hash|deployment pin|challenge mismatch|escrow code|measured|\bTDX\b|\bNRAS\b|\bMR(?:TD|SEAM|CONFIGID)\b/i.test(original)) {
     category = "verification";
     message = /model|NEAR/i.test(original)
       ? "Couldn't verify the model, so nothing was sent. Retry, or reload the page."
@@ -58,18 +70,6 @@ export function replyFailure(error, { partial = false, online = globalThis.navig
   } else if (/\[api\.invalid_input\]|invalid_json/.test(original)) {
     category = "provider";
     message = "The model couldn't read this request. Retry, or reload the page.";
-  } else if (/PROVIDER_|NEAR_|INFERENCE_ERROR/.test(code || "")) {
-    category = "provider";
-    const upstream = /^PROVIDER_HTTP_(\d{3})(?:_([A-Z0-9_]+))?$/.exec(code || "");
-    const reasons = { 401: "authentication failed", 403: "access denied", 402: "insufficient credit", 429: "rate limited" };
-    const reason = upstream?.[2]?.toLowerCase().replaceAll("_", " ") || reasons[upstream?.[1]];
-    message = upstream
-      ? `NEAR AI returned ${upstream[1]}${reason ? ` (${reason})` : ""}.`
-      : code === "PROVIDER_TIMEOUT" ? "NEAR AI timed out. Retry."
-      : code === "PROVIDER_ABORTED" ? "NEAR AI request was aborted. Retry."
-      : code === "NEAR_ATTESTATION_TRANSPORT" ? "Couldn't reach NEAR AI over the attested connection. Retry."
-      : "NEAR AI couldn't finish this reply. Wait a moment, then Retry.";
-    if (upstream && ["401", "402", "403"].includes(upstream[1])) retryable = false;
   } else if (error?.status) {
     category = "broker";
     message = error.status === 403

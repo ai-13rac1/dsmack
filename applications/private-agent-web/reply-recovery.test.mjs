@@ -124,6 +124,7 @@ test('guest closure and busy capacity cannot be confused with a broker restart o
 test('NEAR HTTP status and structured cause reach the retry message', () => {
   for (const [code, text, retryable] of [
     ['PROVIDER_HTTP_402_INSUFFICIENT_CREDIT', 'NEAR AI returned 402 (insufficient credit).', false],
+    ['PROVIDER_HTTP_402_CREDIT_EXHAUSTED', 'NEAR AI returned 402 (credit exhausted).', false],
     ['PROVIDER_HTTP_401', 'NEAR AI returned 401 (authentication failed).', false],
     ['PROVIDER_HTTP_429_RATE_LIMIT', 'NEAR AI returned 429 (rate limit).', true],
     ['PROVIDER_HTTP_503', 'NEAR AI returned 503.', true],
