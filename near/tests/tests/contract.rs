@@ -477,6 +477,65 @@ async fn registry_keeps_teams_apart() {
     }
 }
 
+/// Every fixed-length argument of a call or a view rejects a value of the wrong length.
+#[tokio::test]
+async fn arguments_of_the_wrong_length_fail() {
+    let (e, f, kid) = enrolled_mac().await;
+    let short = b64(&[0u8; 31]);
+    for (method, key, name) in [
+        ("key", "kid", "kid must be 32 bytes"),
+        ("intermediate", "id", "id must be 32 bytes"),
+        ("rp_id_hash", "cdhash", "cdhash must be 32 bytes"),
+        ("team_id_hash", "cdhash", "cdhash must be 32 bytes"),
+        ("bundle_id_hash", "cdhash", "cdhash must be 32 bytes"),
+        ("is_admitted", "cdhash", "cdhash must be 32 bytes"),
+        ("build_of", "cdhash", "cdhash must be 32 bytes"),
+        ("rp_of", "cdhash", "cdhash must be 32 bytes"),
+        ("is_approved", "build", "build must be 32 bytes"),
+    ] {
+        let r = e.contract.view(method).args_json(json!({ key: short })).await.err().expect(method);
+        assert!(format!("{r:?}").contains(name), "{method}: {r:?}");
+    }
+    let r = e.contract.view("evidence").args_json(json!({"consumer": e.owner.id(), "kid": short})).await.err().expect("evidence");
+    assert!(format!("{r:?}").contains("kid must be 32 bytes"), "{r:?}");
+
+    call(&e.owner, &e.contract, "enroll", enroll_args(&f, &short), "id must be 32 bytes").await;
+    let (ctx, p) = proof(&f, "assert", &kid);
+    for (field, name) in [("kid", "kid"), ("r", "r"), ("s", "s")] {
+        let mut q = p.clone();
+        q[field] = json!(short);
+        call(&e.owner, &e.contract, "verify", json!({"context": ctx, "proof": q}), &format!("{name} must be 32 bytes")).await;
+    }
+    call(&e.owner, &e.contract, "verify", json!({"context": short, "proof": p}), "context must be 32 bytes").await;
+
+    let wasm = std::fs::read(PathBuf::from(std::env::var("WASM_DIR").unwrap()).join("dsmack_near.wasm")).unwrap();
+    let c = e.sb.dev_deploy(&wasm).await.unwrap();
+    let r = c
+        .call("new")
+        .args_json(json!({"owner": e.owner.id(), "aaguid": b64(&[0u8; 15]), "category": 3, "ios": false}))
+        .transact()
+        .await
+        .unwrap();
+    assert!(format!("{:?}", r.failures()).contains("aaguid must be 16 bytes"), "{:?}", r.failures());
+}
+
+/// A malformed CodeDirectory fails with the message of the Solidity CDRegistry.
+#[tokio::test]
+async fn malformed_code_directory_fails() {
+    let e = setup(3, false, b"appattest\0\0\0\0\0\0\0").await;
+    approve_build(&e, "contracts/fixtures/cd-args-probe-macos.json").await;
+    let j = load("contracts/fixtures/cd-args-probe-macos.json");
+    let mut cd = hx(&j["cd"]);
+    cd[0] ^= 1;
+    let args = json!({"cd": b64(&cd), "page0": b64(&hx(&j["page0"])), "ent": b64(&hx(&j["ent"]))});
+    call(&e.owner, &e.contract, "register_build", args, "blob").await;
+    let args = json!({"cd": b64(&hx(&j["cd"])), "page0": b64(&[0u8; 8]), "ent": b64(&hx(&j["ent"]))});
+    call(&e.owner, &e.contract, "register_build", args, "sha256/16KiB").await;
+    // The CodeDirectory holds the hash of page 0.
+    let args = json!({"cd": b64(&hx(&j["cd"])), "page0": b64(&[0u8; 16384]), "ent": b64(&hx(&j["ent"]))});
+    call(&e.owner, &e.contract, "register_build", args, "page0 hash").await;
+}
+
 /// `verify` treats signature values as the P-256 precompile of the Solidity (RIP-7212)
 /// does: both `s` and `n - s` verify, and zero or out-of-range values fail. Apple signs
 /// with either form: `fresh-apple.json` `assert` has a high S.
