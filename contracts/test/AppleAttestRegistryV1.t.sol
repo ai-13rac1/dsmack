@@ -5,6 +5,7 @@ import {EndorsementFixture as EF} from "attest-test/EndorsementFixture.sol";
 import {Test} from "forge-std/Test.sol";
 import {AppleAttestRegistryV1, AppleAttestAnyBuildV1} from "../src/AppleAttestRegistryV1.sol";
 import {AppleAuthData} from "attest/AppleAuthData.sol";
+import {AppleAttestRegistryMigrationV1} from "../src/AppleAttestRegistryMigrationV1.sol";
 import {CDRegistry} from "../src/CDRegistry.sol";
 import {P256Verifier} from "attest-test/P256Verifier.sol";
 contract Lookup is AppleAttestRegistryV1 {
@@ -94,6 +95,20 @@ contract AppleAttestRegistryV1Test is Test {
         Lookup l=new Lookup(new CDRegistry(),bytes16("appattest"));
         string memory f=vm.readFile("../app-attest/contracts/fixtures/iphone-apple.json");
         vm.expectRevert("validation category");l.check(vm.parseJsonBytes(f,".assert.auth"));
+    }
+    function test_RegistryMigrationPreservesVerifiedKeyAndCounter() public {
+        mac(true);adapter.enroll(cert,auth,clientData,EF.id());
+        (bytes32 context,bytes memory proof)=assertion("assert");adapter.verify(context,proof);
+        AppleAttestRegistryMigrationV1 next=new AppleAttestRegistryMigrationV1(adapter.endorsements(),address(this),cds,aaguid,adapter);
+        vm.warp(block.timestamp+7 days); // Enrollment leaf is expired; the verified key remains valid.
+        next.migrate(kid);
+        (uint256 x,uint256 y,uint64 expires,uint32 counter,bool enrolled)=next.keys(kid);
+        (uint256 ox,uint256 oy,uint64 oe,,)=adapter.keys(kid);
+        assertEq(x,ox);assertEq(y,oy);assertEq(expires,oe);assertEq(counter,1);assertTrue(enrolled);
+        vm.expectRevert("assertion replay");next.verify(context,proof);
+        (context,proof)=assertion("restored");assertEq(next.verify(context,proof),kid);
+        vm.expectRevert("already enrolled");next.migrate(kid);
+        vm.expectRevert("key validity");next.migrate(bytes32(0));
     }
     function test_ReleaseDevelopmentAndDeveloperIDShareCodeBaseline() public {
         developerID(6);
