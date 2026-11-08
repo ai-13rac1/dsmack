@@ -36,7 +36,7 @@ struct StoredKey {
     expires: u64,
 }
 
-#[derive(BorshSerialize, BorshDeserialize, Clone)]
+#[derive(BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "near_sdk::borsh")]
 struct StoredEvidence {
     context: B32,
@@ -112,10 +112,7 @@ pub struct Dsmack {
 }
 
 fn check<T>(r: Result<T, Error>) -> T {
-    match r {
-        Ok(v) => v,
-        Err(e) => env::panic_str(e.0),
-    }
+    r.unwrap_or_else(|e| env::panic_str(e.0))
 }
 
 fn fixed<const N: usize>(b: &Base64VecU8, what: &str) -> [u8; N] {
@@ -184,11 +181,13 @@ impl Dsmack {
         Platform { aaguid: self.aaguid, category: self.category, ios: self.ios }
     }
 
+    /// The registered build of a CDHash, when it was registered under the current build.
+    fn current(&self, cdhash: &B32) -> Option<&StoredBuild> {
+        self.builds.get(cdhash).filter(|b| b.build == self.build_id)
+    }
+
     fn resolve_rp(&self, cdhash: &B32) -> B32 {
-        match self.builds.get(cdhash) {
-            Some(b) if b.build == self.build_id => b.rp,
-            _ => [0; 32],
-        }
+        self.current(cdhash).map_or([0; 32], |b| b.rp)
     }
 }
 
@@ -299,6 +298,7 @@ impl Dsmack {
         let slot = (caller.clone(), kid);
         let counter = self.evidence.get(&slot).map_or(0, |e| e.counter);
         let key = self.keys.get(&kid).map(|k| Key { x: k.x, y: k.y, expires: k.expires, counter });
+        let at = now();
         let a = check(attest::verify(
             &Host,
             &self.platform(),
@@ -308,11 +308,11 @@ impl Dsmack {
             &context,
             &fixed(&proof.r, "r"),
             &fixed(&proof.s, "s"),
-            now(),
+            at,
         ));
         self.evidence.insert(
             slot,
-            StoredEvidence { context, cdhash: a.cdhash, rp: a.rp, checked_at: now(), counter: a.counter },
+            StoredEvidence { context, cdhash: a.cdhash, rp: a.rp, checked_at: at, counter: a.counter },
         );
         self.evidence.flush();
         settle(before);
@@ -384,21 +384,11 @@ impl Dsmack {
     }
 
     pub fn team_id_hash(&self, cdhash: Base64VecU8) -> Base64VecU8 {
-        let h: B32 = fixed(&cdhash, "cdhash");
-        let t = match self.builds.get(&h) {
-            Some(b) if b.build == self.build_id => b.team,
-            _ => [0; 32],
-        };
-        Base64VecU8(t.to_vec())
+        b64(&self.current(&fixed(&cdhash, "cdhash")).map_or([0; 32], |b| b.team))
     }
 
     pub fn bundle_id_hash(&self, cdhash: Base64VecU8) -> Base64VecU8 {
-        let h: B32 = fixed(&cdhash, "cdhash");
-        let t = match self.builds.get(&h) {
-            Some(b) if b.build == self.build_id => b.bundle,
-            _ => [0; 32],
-        };
-        Base64VecU8(t.to_vec())
+        b64(&self.current(&fixed(&cdhash, "cdhash")).map_or([0; 32], |b| b.bundle))
     }
 
     pub fn is_admitted(&self, cdhash: Base64VecU8) -> bool {

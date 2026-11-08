@@ -95,7 +95,7 @@ pub fn load_commands(page0: &[u8]) -> Result<(usize, usize)> {
 
 /// Hash of page 0 with the three signer-dependent fields cleared: the `__LINKEDIT`
 /// vmsize and filesize, and the LC_CODE_SIGNATURE datasize.
-pub fn masked_hash(c: &impl Crypto, page0: &[u8], linkedit: usize, code_sig: usize) -> [u8; 32] {
+fn masked_hash(c: &impl Crypto, page0: &[u8], linkedit: usize, code_sig: usize) -> [u8; 32] {
     let mut p = page0.to_vec();
     p[linkedit + 32..linkedit + 40].fill(0);
     p[linkedit + 48..linkedit + 56].fill(0);
